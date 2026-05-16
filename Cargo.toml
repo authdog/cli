@@ -1,0 +1,11 @@
+[package]
+name = "authdog-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.102"
+crossterm = "0.29.0"
+ratatui = "0.30.0"
+tui-input = "0.15.3"
+unicode-width = "0.2.2"
