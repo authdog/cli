@@ -3,8 +3,8 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::style::Stylize;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::DefaultTerminal;
@@ -128,10 +128,7 @@ impl App {
             }
         }
 
-        f.render_widget(
-            Paragraph::new("").style(Style::default().bg(BG)),
-            spacer,
-        );
+        f.render_widget(Paragraph::new("").style(Style::default().bg(BG)), spacer);
 
         self.draw_input_and_cursor(f, input_chunk);
 
@@ -142,10 +139,7 @@ impl App {
             " run · Esc".into(),
             " leave · Ctrl+C quit".dim(),
         ]);
-        f.render_widget(
-            Paragraph::new(hint).style(TXT_DIM).bg(BG),
-            foot_chunk,
-        );
+        f.render_widget(Paragraph::new(hint).style(TXT_DIM).bg(BG), foot_chunk);
     }
 
     fn sync_list_selection(&mut self, len: usize) {
@@ -210,16 +204,11 @@ impl App {
                 let label = format!("/{}", c.name);
                 let padded = truncate_pad(&label, cmd_w);
                 let space = cmp::max(2, area.width.saturating_sub((cmd_w as u16) + 8) as usize);
-                let rest_w = area
-                    .width
-                    .saturating_sub(cmd_w as u16 + space as u16 + 6) as usize;
+                let rest_w = area.width.saturating_sub(cmd_w as u16 + space as u16 + 6) as usize;
                 let tail = truncate_vis(c.desc, rest_w.max(12));
                 Line::from(vec![
                     Span::styled(padded, Style::default().fg(TXT).bold()),
-                    Span::styled(
-                        " ".repeat(space),
-                        Style::default().bg(SURFACE_HI),
-                    ),
+                    Span::styled(" ".repeat(space), Style::default().bg(SURFACE_HI)),
                     Span::styled(tail, Style::default().fg(TXT_DIM)),
                 ])
             })
@@ -234,12 +223,7 @@ impl App {
                     .title(Line::from("Commands".bold().fg(TXT)))
                     .style(Style::default().bg(SURFACE_HI)),
             )
-            .highlight_style(
-                Style::default()
-                    .bg(SEL_BG)
-                    .fg(SEL_FG)
-                    .bold(),
-            )
+            .highlight_style(Style::default().bg(SEL_BG).fg(SEL_FG).bold())
             .highlight_symbol("› ");
 
         f.render_stateful_widget(list, area, &mut self.list_state);
@@ -265,7 +249,11 @@ impl App {
             );
         f.render_widget(p, area);
 
-        let x = self.input.visual_cursor().saturating_sub(scroll).saturating_add(1);
+        let x = self
+            .input
+            .visual_cursor()
+            .saturating_sub(scroll)
+            .saturating_add(1);
         let max_x = area.width.saturating_sub(2); // inner text width (approx)
         let cx = cmp::min(x as u16, max_x.max(1));
         f.set_cursor_position((area.x + cx, area.y + 1));
