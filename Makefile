@@ -1,4 +1,4 @@
-.PHONY: all build release run clean check fmt clippy test wasm
+.PHONY: all build release run clean check fmt clippy test wasm tenants
 
 all: build
 
@@ -34,6 +34,10 @@ wasm:
 	rustup target add $(WASM_TARGET) >/dev/null 2>&1 || true
 	cargo build -p $(WASM_PKG) --release --target $(WASM_TARGET)
 	@echo "WASM artifact: $$(pwd)/$(WASM_OUT)"
+
+## Run tests tied to tenants (substring match: TUI separators + tenants REST error shaping).
+tenants:
+	cargo test -p authdog-cli tenants
 
 clean:
 	cargo clean
