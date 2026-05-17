@@ -19,12 +19,12 @@ pub struct OutputPalette {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DocBlock {
     Neutral,
-    /// Pretty-printed JSON body after a `── … (…) ──` REST section banner.
+    /// REST section banner body: pretty-printed JSON, or (**`/whoami` Pretty**) tabular text.
     ApiJsonBody,
     AccessTokenClaims,
 }
 
-/// Section titles immediately followed by JSON (`/v1/userinfo`, `/v1/tenants`, etc.).
+/// Section titles followed by REST bodies (JSON tenants/orgs/projects, **`/whoami` Pretty** tabular envelope, etc.).
 const JSON_SECTION_LINE_PREFIXES: &[&str] = &[
     "── Identity (",
     "── Tenants (",
@@ -104,7 +104,20 @@ pub fn styled_status_lines(
         }
 
         match block {
-            DocBlock::ApiJsonBody => out.push(highlight_json_line(line, palette)),
+            DocBlock::ApiJsonBody => {
+                // `/whoami` Pretty tab renders tabular envelope text; `/tenants` etc. stay JSON.
+                let trimmed = line.trim_start();
+                if line_tail_looks_like_json_fragment(trimmed) {
+                    out.push(highlight_json_line(line, palette));
+                } else {
+                    out.push(claims_or_neutral_body_line(
+                        line,
+                        trimmed,
+                        palette,
+                        fg_base,
+                    ));
+                }
+            }
             DocBlock::AccessTokenClaims => {
                 let tail_t = line.trim_start();
 
@@ -153,6 +166,15 @@ fn neutral_success_line_maybe_check(
     }
 
     Line::from(vec![Span::styled(line.to_string(), fg_base)])
+}
+
+fn line_tail_looks_like_json_fragment(trimmed: &str) -> bool {
+    let first = trimmed.chars().next();
+    matches!(first, Some('{' | '}' | '[' | ']' | '"' | '\''))
+        || trimmed.starts_with("null")
+        || trimmed.starts_with("true")
+        || trimmed.starts_with("false")
+        || matches!(first, Some(c) if c.is_ascii_digit() || c == '-')
 }
 
 fn claims_or_neutral_body_line(

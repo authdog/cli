@@ -234,6 +234,22 @@ pub fn filter_tenants_for_organization_for_browse(
     )
 }
 
+/// Parse **`GET /v1/tenants`** JSON and apply an optional organization scope for listings (**`/tenants`**, **`/tenant`**).
+///
+/// When **`organization_scope`** is **`Some`**, narrows rows using [`filter_tenants_for_organization_for_browse`]
+/// so the UI stays correct if the gateway ignores `?organization_id=…` but includes per-tenant org metadata
+/// (**`organizationIds`**, …). With **`None`**, returns every tenant row from the payload.
+pub fn tenant_listing_rows_from_body(
+    body: &Value,
+    organization_scope: Option<&str>,
+) -> (Vec<TenantRow>, Option<String>) {
+    let all = tenant_rows_from_body(body);
+    match organization_scope.map(str::trim).filter(|s| !s.is_empty()) {
+        None => (all, None),
+        Some(org_id) => filter_tenants_for_organization_for_browse(&all, org_id),
+    }
+}
+
 fn summarize_body_preview(body: &str, max: usize) -> String {
     if body.len() <= max {
         return body.to_string();
@@ -278,8 +294,9 @@ fn tenants_error_body_preview(status: reqwest::StatusCode, body: &str) -> String
 
 /// `GET …/v1/tenants` with the access token.
 ///
-/// When **`scoped_organization_id`** is **`Some`**, sends **`organization_id`** so the API only
-/// returns tenants whose **`organizationIds`** include that organization.
+/// When **`scoped_organization_id`** is **`Some`**, sends **`organization_id`** and **`organizationId`**
+/// (same value; some gateways normalize one form) so the server can return only tenants whose **`organizationIds`**
+/// include that organization. When **`None`**, requests the full merged tenant list.
 pub fn fetch_tenants(access_token: &str, scoped_organization_id: Option<&str>) -> Result<Value> {
     let origin = crate::whoami::api_origin();
     let base = origin.trim_end_matches('/');
@@ -297,7 +314,10 @@ pub fn fetch_tenants(access_token: &str, scoped_organization_id: Option<&str>) -
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        Some(oid) => base_req.query(&[("organization_id", oid)]),
+        Some(oid) => base_req.query(&[
+            ("organization_id", oid),
+            ("organizationId", oid),
+        ]),
         None => base_req,
     };
     let resp = req.send().with_context(|| format!("GET {url}"))?;
@@ -336,12 +356,16 @@ pub fn tenant_ids_from_body(body: &Value) -> Vec<String> {
 }
 
 /// Text for **`/tenants`**: pretty JSON (+ optional credentials path line).
-pub fn compose_tenants_report(access_token: &str, credentials_file_note: Option<String>) -> String {
+pub fn compose_tenants_report(
+    access_token: &str,
+    organization_scope: Option<&str>,
+    credentials_file_note: Option<String>,
+) -> String {
     let origin = crate::whoami::api_origin();
     let base_shown = origin.trim_end_matches('/');
-    let tenants_note = format!("{base_shown}{TENANTS_PATH}");
+    let tenants_note = tenants_list_url_for_display(base_shown, organization_scope);
 
-    let body = match fetch_tenants(access_token, None) {
+    let body = match fetch_tenants(access_token, organization_scope) {
         Ok(ref v) => {
             let json = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
             format!("── Tenants ({tenants_note}) ──\n{json}")
@@ -362,6 +386,36 @@ pub fn compose_tenants_report(access_token: &str, credentials_file_note: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tenant_listing_rows_applies_org_scope_when_payload_has_org_metadata() {
+        let v: Value = serde_json::from_str(
+            r#"{"tenants":[
+               {"id":"in-org","name":"A","organizationIds":["org-x"]},
+               {"id":"other","name":"B","organizationIds":["org-y"]}
+            ]}"#,
+        )
+        .unwrap();
+        let (rows, note) = tenant_listing_rows_from_body(&v, Some("org-x"));
+        assert!(note.is_none());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "in-org");
+    }
+
+    #[test]
+    fn tenants_list_url_display_adds_org_query() {
+        let u = tenants_list_url_for_display("https://api.example.com", Some("org-1"));
+        assert_eq!(
+            u,
+            "https://api.example.com/v1/tenants?organization_id=org-1"
+        );
+        let base = tenants_list_url_for_display("https://api.example.com", None);
+        assert_eq!(base, "https://api.example.com/v1/tenants");
+        assert_eq!(
+            tenants_list_url_for_display("https://api.example.com/", Some("  x  ")),
+            "https://api.example.com/v1/tenants?organization_id=x"
+        );
+    }
 
     #[test]
     fn cf_1003_detail_appends_ops_hint() {

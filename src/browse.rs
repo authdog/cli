@@ -99,7 +99,7 @@ impl BrowseSession {
             session_store::set_current_organization_id(None)?;
             let ten_value = tenants::fetch_tenants(&access_token, None)
                 .context("GET /v1/tenants (no organizations)")?;
-            let tenant_rows = tenants::tenant_rows_from_body(&ten_value);
+            let (tenant_rows, _) = tenants::tenant_listing_rows_from_body(&ten_value, None);
             BrowseStep::PickTenant {
                 org_summary: "All tenants (no organizations)".into(),
                 tenants: tenant_rows,
@@ -131,10 +131,8 @@ impl BrowseSession {
 
         let ten_value = tenants::fetch_tenants(&self.access_token, Some(org_id.as_str()))
             .context("GET /v1/tenants")?;
-        let all = tenants::tenant_rows_from_body(&ten_value);
-
         let (filtered, advisory) =
-            tenants::filter_tenants_for_organization_for_browse(&all, org_id.as_str());
+            tenants::tenant_listing_rows_from_body(&ten_value, Some(org_id.as_str()));
         if filtered.is_empty() {
             anyhow::bail!(
                 "{}",

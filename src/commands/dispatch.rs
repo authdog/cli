@@ -161,15 +161,35 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                 let endpoint = tenants::tenants_list_url_for_display(&base, scoped_org);
                 match tenants::fetch_tenants(&s.access_token, scoped_org) {
                     Ok(json) => {
-                        let rows = tenants::tenant_rows_from_body(&json);
-                        app.listing_picker = Some(ListingPicker::Tenants {
-                            rows,
-                            endpoint,
-                            credentials_note: cred_note,
-                        });
-                        app.listing_list_state.select(Some(0));
-                        app.status = None;
-                        app.status_err = false;
+                        let (rows, scope_note) =
+                            tenants::tenant_listing_rows_from_body(&json, scoped_org);
+                        if rows.is_empty() {
+                            if let Some(msg) = scope_note {
+                                app.clear_listing_picker();
+                                app.status = Some(format!(
+                                    "── Tenants ({endpoint}) ──\n{msg}"
+                                ));
+                                app.status_err = true;
+                            } else {
+                                app.listing_picker = Some(ListingPicker::Tenants {
+                                    rows,
+                                    endpoint,
+                                    credentials_note: cred_note,
+                                });
+                                app.listing_list_state.select(None);
+                                app.status = None;
+                                app.status_err = false;
+                            }
+                        } else {
+                            app.listing_picker = Some(ListingPicker::Tenants {
+                                rows,
+                                endpoint,
+                                credentials_note: cred_note,
+                            });
+                            app.listing_list_state.select(Some(0));
+                            app.status = None;
+                            app.status_err = false;
+                        }
                     }
                     Err(err) => {
                         app.status = Some(format!(
@@ -232,8 +252,11 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                                 let mut warning = String::new();
                                 match tenants::fetch_tenants(&s.access_token, scoped_org) {
                                     Ok(v) => {
-                                        let ids = tenants::tenant_ids_from_body(&v);
-                                        if !ids.iter().any(|x| x.as_str() == tid) {
+                                        let (rows, _) =
+                                            tenants::tenant_listing_rows_from_body(&v, scoped_org);
+                                        let ids: Vec<&str> =
+                                            rows.iter().map(|r| r.id.as_str()).collect();
+                                        if !ids.contains(&tid) {
                                             allowed = false;
                                         }
                                     }
