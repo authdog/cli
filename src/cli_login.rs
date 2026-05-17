@@ -352,8 +352,6 @@ pub fn run_browser_login_blocking(cfg: &CliAuthConfig) -> Result<()> {
     let redeem_body =
         serde_json::to_vec(&serde_json::json!({ "grant": grant })).context("serialize redeem")?;
 
-    eprintln!("Exchanging localhost grant with Identity …");
-
     let redeem_deadline = Instant::now() + Duration::from_secs(2 * 60);
     let mut last_err: Option<anyhow::Error> = None;
 

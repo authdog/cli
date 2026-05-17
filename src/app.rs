@@ -43,6 +43,9 @@ const BANNER_FIGLET: &str = "authdog";
 
 const HEADER_TAIL_LINES: u16 = 6;
 
+/// Prefix before the input buffer (fixed; cursor sits in the value area after this).
+const INPUT_PREFIX: &str = "→ ";
+
 /// Hide the ✔ Signed in banner after this delay (header layout shrinks back).
 const LOGIN_SUCCESS_STATUS_TTL: Duration = Duration::from_secs(4);
 
@@ -324,33 +327,58 @@ impl App {
     }
 
     fn draw_input_and_cursor(&self, f: &mut ratatui::Frame<'_>, area: Rect) {
-        let width = area.width.max(4).saturating_sub(3);
-        let scroll = self.input.visual_scroll(width as usize);
+        const PLACEHOLDER: &str = "Add a follow-up";
 
-        let p = Paragraph::new(self.input.value())
-            .style(Style::default().fg(TXT))
-            .scroll((0, scroll as u16))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(BORDER)
-                    .style(Style::default().bg(SURFACE))
-                    .title(Line::from(Span::styled(
-                        "→ ",
-                        Style::default().fg(ACCENT).bold(),
-                    )))
-                    .title_alignment(Alignment::Left),
-            );
-        f.render_widget(p, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(BORDER)
+            .style(Style::default().bg(SURFACE));
 
-        let x = self
-            .input
-            .visual_cursor()
-            .saturating_sub(scroll)
-            .saturating_add(1);
-        let max_x = area.width.saturating_sub(2); // inner text width (approx)
-        let cx = cmp::min(x as u16, max_x.max(1));
-        f.set_cursor_position((area.x + cx, area.y + 1));
+        let inner = block.inner(area);
+        let prefix_cols = INPUT_PREFIX.width() as u16;
+
+        let [prefix_area, value_area] = Layout::horizontal([
+            Constraint::Length(prefix_cols),
+            Constraint::Min(0),
+        ])
+        .areas(inner);
+
+        f.render_widget(
+            Paragraph::new("")
+                .style(Style::default().bg(SURFACE))
+                .block(block),
+            area,
+        );
+
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                INPUT_PREFIX,
+                Style::default().fg(ACCENT).bold(),
+            )]))
+            .style(Style::default().bg(SURFACE)),
+            prefix_area,
+        );
+
+        let value_w = value_area.width.max(1) as usize;
+        let scroll = self.input.visual_scroll(value_w);
+
+        let value_par = if self.input.value().is_empty() {
+            Paragraph::new(Line::from(vec![Span::styled(
+                PLACEHOLDER,
+                Style::default().fg(TXT_DIM),
+            )]))
+            .style(Style::default().bg(SURFACE))
+        } else {
+            Paragraph::new(self.input.value())
+                .style(Style::default().fg(TXT).bg(SURFACE))
+                .scroll((0, scroll as u16))
+        };
+        f.render_widget(value_par, value_area);
+
+        let x = self.input.visual_cursor().max(scroll) - scroll;
+        let max_x = value_area.width.saturating_sub(1);
+        let cx = value_area.x + (x as u16).min(max_x);
+        f.set_cursor_position((cx, value_area.y));
     }
 
     fn on_event(&mut self, ev: Event, term: &mut DefaultTerminal) -> Result<()> {
