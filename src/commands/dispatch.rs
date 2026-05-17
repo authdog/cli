@@ -60,19 +60,21 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
             app.status_err = false;
             SubmitEffect::BrowserLogin
         }
-        "logout" => match session_store::clear_session() {
-            Ok(()) => {
-                app.status =
+        "logout" => {
+            match session_store::clear_session() {
+                Ok(()) => {
+                    app.status =
                     Some("Signed out locally (credentials file removed).\nRun /login to sign in again.".into());
-                app.status_err = false;
-                SubmitEffect::None
+                    app.status_err = false;
+                    SubmitEffect::None
+                }
+                Err(err) => {
+                    app.status = Some(format!("{err:#}"));
+                    app.status_err = true;
+                    SubmitEffect::None
+                }
             }
-            Err(err) => {
-                app.status = Some(format!("{err:#}"));
-                app.status_err = true;
-                SubmitEffect::None
-            }
-        },
+        }
         "whoami" | "me" => match session_store::load_session() {
             Ok(Some(s)) => {
                 app.status = Some(whoami::compose_whoami_report(
@@ -86,8 +88,7 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
             }
             Ok(None) => {
                 app.status = Some(
-                    "Not logged in (/whoami).\nTry /login, or use /status to confirm files."
-                        .into(),
+                    "Not logged in (/whoami).\nTry /login, or use /status to confirm files.".into(),
                 );
                 app.status_err = false;
                 SubmitEffect::None
@@ -177,8 +178,9 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                                     ));
                                     app.status_err = true;
                                 } else {
-                                    match session_store::set_current_tenant_id(Some(tid.to_string()))
-                                    {
+                                    match session_store::set_current_tenant_id(Some(
+                                        tid.to_string(),
+                                    )) {
                                         Ok(()) => {
                                             app.status = Some(format!(
                                                 "Current tenant set to:\n{tid}{warning}"
@@ -205,8 +207,7 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
             }
             Ok(None) => {
                 app.status = Some(
-                    "Not logged in (/tenant).\nTry /login, or use /status to confirm files."
-                        .into(),
+                    "Not logged in (/tenant).\nTry /login, or use /status to confirm files.".into(),
                 );
                 app.status_err = false;
                 SubmitEffect::None

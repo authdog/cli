@@ -426,7 +426,10 @@ mod tests {
         let lines = styled_status_lines(s, pal(), false);
         assert!(lines.len() >= 2);
         assert!(
-            lines[1].spans.iter().any(|sp| sp.content.contains("projects")),
+            lines[1]
+                .spans
+                .iter()
+                .any(|sp| sp.content.contains("projects")),
             "{lines:?}",
         );
     }

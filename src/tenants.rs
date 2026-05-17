@@ -85,7 +85,11 @@ pub fn tenant_ids_from_body(body: &Value) -> Vec<String> {
     };
     for arr in arrays {
         for item in *arr {
-            if let Some(id) = item.get("id").and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
+            if let Some(id) = item
+                .get("id")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+            {
                 ids.push(id.to_string());
             }
         }
@@ -136,7 +140,10 @@ mod tests {
     fn collects_ids_from_tenants_field() {
         let v: Value =
             serde_json::from_str(r#"{"tenants":[{"id":"a"},{"id":"b"},{"foo":1}]}"#).unwrap();
-        assert_eq!(tenant_ids_from_body(&v), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            tenant_ids_from_body(&v),
+            vec!["a".to_string(), "b".to_string()]
+        );
     }
 
     #[test]

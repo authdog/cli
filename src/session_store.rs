@@ -82,10 +82,7 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: StoredSession = serde_json::from_str(&json).unwrap();
         assert_eq!(back.access_token, "token-a");
-        assert_eq!(
-            back.current_tenant_id.as_deref(),
-            Some("tenant-uuid")
-        );
+        assert_eq!(back.current_tenant_id.as_deref(), Some("tenant-uuid"));
         assert_eq!(back.refresh_token, "token-r");
     }
 }

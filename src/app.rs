@@ -337,11 +337,8 @@ impl App {
         let inner = block.inner(area);
         let prefix_cols = INPUT_PREFIX.width() as u16;
 
-        let [prefix_area, value_area] = Layout::horizontal([
-            Constraint::Length(prefix_cols),
-            Constraint::Min(0),
-        ])
-        .areas(inner);
+        let [prefix_area, value_area] =
+            Layout::horizontal([Constraint::Length(prefix_cols), Constraint::Min(0)]).areas(inner);
 
         f.render_widget(
             Paragraph::new("")
