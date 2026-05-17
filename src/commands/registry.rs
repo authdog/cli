@@ -24,7 +24,7 @@ pub const CMDS: &[SlashCmd] = &[
     },
     SlashCmd {
         name: "tenants",
-        desc: "Tenants from api.authdog.com (/v1/tenants)",
+        desc: "Interactive tenant list (↑↓ Enter) · api /v1/tenants",
     },
     SlashCmd {
         name: "tenant",
@@ -36,11 +36,11 @@ pub const CMDS: &[SlashCmd] = &[
     },
     SlashCmd {
         name: "browse",
-        desc: "Pick org · tenant · projects (↑↓ Enter Esc)",
+        desc: "Pick org · tenant · project · env (↑↓ Enter Esc)",
     },
     SlashCmd {
         name: "organizations",
-        desc: "Organizations (/v1/organizations; alias /orgs)",
+        desc: "Interactive org list (↑↓ Enter) · /v1/organizations (/orgs)",
     },
     SlashCmd {
         name: "status",

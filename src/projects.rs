@@ -266,7 +266,7 @@ pub fn fetch_application_environments(
 
 /// Session output after `/browse` finishes on an environment.
 pub fn compose_selected_environment_report(
-    access_token: &str,
+    _access_token: &str,
     tenant_id: &str,
     application_id: &str,
     environment_id: &str,
@@ -291,6 +291,27 @@ pub fn compose_selected_environment_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_and_environment_rows_from_json() {
+        let pj: Value = serde_json::from_str(
+            r#"{"projects":[{"id":"p1","name":"App","type":"web"},{"id":"p2"}]}"#,
+        )
+        .unwrap();
+        let prows = project_rows_from_body(&pj);
+        assert_eq!(prows.len(), 2);
+        let p1 = prows.iter().find(|x| x.id == "p1").unwrap();
+        assert_eq!(p1.name.as_deref(), Some("App"));
+        assert_eq!(p1.project_type.as_deref(), Some("web"));
+
+        let env: Value =
+            serde_json::from_str(r#"{"environments":[{"id":"e1","name":"staging"},{"id":"e2"}]}"#)
+                .unwrap();
+        let erows = environment_rows_from_body(&env);
+        assert_eq!(erows.len(), 2);
+        let e2 = erows.iter().find(|x| x.id == "e2").unwrap();
+        assert!(e2.name.is_none());
+    }
 
     #[test]
     fn cf_1003_detail_appends_ops_hint() {

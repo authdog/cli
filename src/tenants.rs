@@ -5,13 +5,15 @@ use reqwest::blocking::Client;
 use serde_json::Value;
 use std::time::Duration;
 
-const TENANTS_PATH: &str = "/v1/tenants";
+pub const TENANTS_PATH: &str = "/v1/tenants";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TenantRow {
     pub id: String,
     pub name: Option<String>,
     pub organization_id: Option<String>,
+    /// Set when **`GET /v1/tenants`** includes **`organizationIds`**. **`Some([])`** means the merged list did not associate that tenant with an org-linked slice (e.g. **`tenantsWithAccess`** only).
+    pub organization_ids: Option<Vec<String>>,
 }
 
 impl TenantRow {
@@ -25,6 +27,25 @@ impl TenantRow {
             .to_ascii_lowercase();
         (n, self.id.clone())
     }
+}
+
+fn tenant_organization_ids_array(item: &Value) -> Option<Vec<String>> {
+    for key in ["organizationIds", "organization_ids"] {
+        let Some(raw) = item.get(key).and_then(|x| x.as_array()) else {
+            continue;
+        };
+        let mut ids: Vec<String> = Vec::new();
+        for el in raw {
+            let Some(s) = el.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+                continue;
+            };
+            ids.push(s.to_string());
+        }
+        ids.sort();
+        ids.dedup();
+        return Some(ids);
+    }
+    None
 }
 
 fn tenant_org_id_hint(item: &Value) -> Option<String> {
@@ -81,11 +102,23 @@ pub fn tenant_rows_from_body(body: &Value) -> Vec<TenantRow> {
                 continue;
             }
             let name = tenant_name_hint(item);
-            let organization_id = tenant_org_id_hint(item);
+            let organization_ids_raw = tenant_organization_ids_array(item);
+            let scalar_org = tenant_org_id_hint(item);
+            let organization_ids = organization_ids_raw.or_else(|| {
+                scalar_org
+                    .as_ref()
+                    .map(|s| vec![s.clone()])
+            });
+            let organization_id = scalar_org.or_else(|| {
+                organization_ids
+                    .as_ref()
+                    .and_then(|v| v.first().cloned())
+            });
             out.push(TenantRow {
                 id: id.to_string(),
                 name,
                 organization_id,
+                organization_ids,
             });
         }
     }
@@ -94,9 +127,23 @@ pub fn tenant_rows_from_body(body: &Value) -> Vec<TenantRow> {
     out
 }
 
-/// If any tenant declares an owning organization id, restrict to **`org_id`**. Otherwise returns full list.
+fn tenant_lists_organization(t: &TenantRow, org_id: &str) -> bool {
+    if let Some(slice) = t.organization_ids.as_deref() {
+        if slice.iter().any(|oid| oid == org_id) {
+            return true;
+        }
+    }
+    t.organization_id.as_deref() == Some(org_id)
+}
+
+fn response_declares_organization_metadata(all: &[TenantRow]) -> bool {
+    all.iter()
+        .any(|t| t.organization_id.is_some() || t.organization_ids.is_some())
+}
+
+/// Narrow **`GET /v1/tenants`** rows when the REST payload includes organization membership metadata (**`organizationIds`** or legacy scalar org fields).
 ///
-/// When filtering finds no rows but **`all`** non-empty (schema mismatch upstream), callers may widen with the message.
+/// Legacy servers that omit linkage keep the previous behaviour: return **all** tenants (some org pickers cannot be narrowed client-side alone).
 pub fn filter_tenants_for_organization(
     all: &[TenantRow],
     org_id: &str,
@@ -104,25 +151,27 @@ pub fn filter_tenants_for_organization(
     if org_id.is_empty() || all.is_empty() {
         return (all.to_vec(), None);
     }
-    let linked = all.iter().any(|t| t.organization_id.is_some());
-    if !linked {
-        return (all.to_vec(), None);
+
+    if response_declares_organization_metadata(all) {
+        let matched: Vec<TenantRow> = all
+            .iter()
+            .filter(|t| tenant_lists_organization(t, org_id))
+            .cloned()
+            .collect();
+
+        return if matched.is_empty() && !all.is_empty() {
+            (
+                matched,
+                Some(format!(
+                    "REST tenants response includes organization membership, but none of these tenants belong to `{org_id}`. Press Esc and try another organization."
+                )),
+            )
+        } else {
+            (matched, None)
+        };
     }
-    let matched: Vec<TenantRow> = all
-        .iter()
-        .filter(|t| t.organization_id.as_deref() == Some(org_id))
-        .cloned()
-        .collect();
-    if matched.is_empty() && !all.is_empty() {
-        (
-            all.to_vec(),
-            Some(format!(
-                "No `/v1/tenants` rows reference organization `{org_id}`; showing every tenant."
-            )),
-        )
-    } else {
-        (matched, None)
-    }
+
+    (all.to_vec(), None)
 }
 
 fn summarize_body_preview(body: &str, max: usize) -> String {
@@ -279,6 +328,14 @@ mod tests {
         let t2 = rows.iter().find(|r| r.id == "t2").unwrap();
         assert_eq!(t1.organization_id.as_deref(), Some("org-a"));
         assert_eq!(t2.organization_id.as_deref(), Some("org-b"));
+        assert_eq!(
+            t1.organization_ids.as_deref(),
+            Some(&["org-a".into()][..])
+        );
+        assert_eq!(
+            t2.organization_ids.as_deref(),
+            Some(&["org-b".into()][..])
+        );
 
         let (m, _) = filter_tenants_for_organization(&rows, "org-a");
         assert_eq!(m.len(), 1);
@@ -292,11 +349,13 @@ mod tests {
                 id: "a".into(),
                 name: None,
                 organization_id: None,
+                organization_ids: None,
             },
             TenantRow {
                 id: "b".into(),
                 name: None,
                 organization_id: None,
+                organization_ids: None,
             },
         ];
         let (all, _) = filter_tenants_for_organization(&rows, "anything");
@@ -304,22 +363,39 @@ mod tests {
     }
 
     #[test]
-    fn filter_no_match_fallback_lists_all_and_warns() {
+    fn filter_with_declared_org_metadata_no_overlap_returns_empty() {
         let rows = vec![
             TenantRow {
                 id: "a".into(),
                 name: None,
                 organization_id: Some("org-1".into()),
+                organization_ids: Some(vec!["org-1".into()]),
             },
             TenantRow {
                 id: "b".into(),
                 name: None,
                 organization_id: Some("org-2".into()),
+                organization_ids: Some(vec!["org-2".into()]),
             },
         ];
-        let (wide, hint) = filter_tenants_for_organization(&rows, "missing-org");
-        assert_eq!(wide.len(), 2);
+        let (narrow, hint) = filter_tenants_for_organization(&rows, "missing-org");
+        assert!(narrow.is_empty());
         assert!(hint.unwrap().contains("missing-org"));
+    }
+
+    #[test]
+    fn filter_organization_ids_excludes_grant_only_tenant() {
+        let v: Value = serde_json::from_str(
+            r#"{"tenants":[
+               {"id":"linked","organizationIds":["org-demo"]},
+               {"id":"grant_only","organizationIds":[]}
+            ]}"#,
+        )
+        .unwrap();
+        let rows = tenant_rows_from_body(&v);
+        let (picked, _) = filter_tenants_for_organization(&rows, "org-demo");
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].id, "linked");
     }
 
     #[test]

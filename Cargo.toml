@@ -7,6 +7,11 @@ default-members = ["."]
 name = "authdog-cli"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
+
+[build-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+uuid = { version = "1", features = ["v4"] }
 
 [lib]
 path = "src/lib.rs"

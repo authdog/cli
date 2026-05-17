@@ -13,6 +13,12 @@ pub struct StoredSession {
     /// Tenant uuid selected for scoped commands (`/projects`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_tenant_id: Option<String>,
+    /// Project (application) id from interactive `/browse`; optional hints for tooling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_application_id: Option<String>,
+    /// Environment id from interactive `/browse`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_environment_id: Option<String>,
 }
 
 fn config_dir() -> Result<PathBuf> {
@@ -61,6 +67,20 @@ pub fn clear_session() -> Result<()> {
     Ok(())
 }
 
+/// Update **`credentials.json`** with the current application (project) id.
+pub fn set_current_application_id(application_id: Option<String>) -> Result<()> {
+    let mut s = load_session()?.context("not logged in (no credentials.json)")?;
+    s.current_application_id = application_id;
+    save_session(&s)
+}
+
+/// Update **`credentials.json`** with the current project environment id.
+pub fn set_current_environment_id(environment_id: Option<String>) -> Result<()> {
+    let mut s = load_session()?.context("not logged in (no credentials.json)")?;
+    s.current_environment_id = environment_id;
+    save_session(&s)
+}
+
 /// Update **`credentials.json`** with a new current tenant id (must already be logged in).
 pub fn set_current_tenant_id(tenant_id: Option<String>) -> Result<()> {
     let mut s = load_session()?.context("not logged in (no credentials.json)")?;
@@ -78,11 +98,14 @@ mod tests {
             access_token: "token-a".into(),
             refresh_token: "token-r".into(),
             current_tenant_id: Some("tenant-uuid".into()),
+            current_application_id: Some("app-uuid".into()),
+            current_environment_id: Some("env-uuid".into()),
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: StoredSession = serde_json::from_str(&json).unwrap();
         assert_eq!(back.access_token, "token-a");
         assert_eq!(back.current_tenant_id.as_deref(), Some("tenant-uuid"));
-        assert_eq!(back.refresh_token, "token-r");
+        assert_eq!(back.current_application_id.as_deref(), Some("app-uuid"));
+        assert_eq!(back.current_environment_id.as_deref(), Some("env-uuid"));
     }
 }

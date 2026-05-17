@@ -1,15 +1,18 @@
 //! Full-screen Ratatui shell: layout, input, and session output pane.
 
-use crate::browse::{BrowseSession, BrowseStep};
+use crate::browse::{BrowsePopOutcome, BrowseSession, BrowseStep};
 use crate::commands::{apply_submit, slash_palette_indices, SubmitEffect, CMDS};
 use crate::tui_output;
 
 use authdog_cli::cli_login;
 use authdog_cli::organizations::OrgRow;
+use authdog_cli::projects::{EnvironmentRow, ProjectRow};
 use authdog_cli::tenants::TenantRow;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
+};
 use figlet_rs::FIGlet;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::Stylize;
@@ -52,6 +55,59 @@ const INPUT_PREFIX: &str = "→ ";
 /// Hide the ✔ Signed in banner after this delay (header layout shrinks back).
 const LOGIN_SUCCESS_STATUS_TTL: Duration = Duration::from_secs(4);
 
+/// Keyboard-driven list launched by **`/tenants`** / **`/organizations`** (instead of JSON).
+#[derive(Clone)]
+pub(crate) enum ListingPicker {
+    Tenants {
+        rows: Vec<TenantRow>,
+        endpoint: String,
+        credentials_note: Option<String>,
+    },
+    Organizations {
+        rows: Vec<OrgRow>,
+        endpoint: String,
+        credentials_note: Option<String>,
+    },
+}
+
+impl ListingPicker {
+    fn row_count(&self) -> usize {
+        match self {
+            ListingPicker::Tenants { rows, .. } => rows.len(),
+            ListingPicker::Organizations { rows, .. } => rows.len(),
+        }
+    }
+
+    fn block_title(&self) -> Line<'_> {
+        match self {
+            ListingPicker::Tenants { endpoint, rows, .. } => Line::from(vec![
+                Span::styled("Tenants", Style::default().fg(TXT).bold()),
+                Span::styled(
+                    format!(" ({endpoint}) · {} rows · pick one", rows.len()),
+                    TXT_DIM,
+                ),
+            ]),
+            ListingPicker::Organizations { endpoint, rows, .. } => Line::from(vec![
+                Span::styled("Organizations", Style::default().fg(TXT).bold()),
+                Span::styled(
+                    format!(" ({endpoint}) · {} rows · pick one", rows.len()),
+                    TXT_DIM,
+                ),
+            ]),
+        }
+    }
+
+    fn append_credentials_footer(text: &mut String, note: Option<&String>) {
+        if let Some(n) = note {
+            let t = n.trim();
+            if !t.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(t);
+            }
+        }
+    }
+}
+
 fn status_fingerprint(opt: Option<&str>) -> u64 {
     let mut h = DefaultHasher::new();
     match opt {
@@ -69,7 +125,7 @@ pub struct App {
     pub(crate) quit: bool,
     pub(crate) input: Input,
     pub(crate) list_state: ListState,
-    /// `/browse` pickers reuse this list (organizations, then tenants).
+    /// `/browse` pickers reuse this list (orgs → tenants → projects → environments).
     pub(crate) browse_list_state: ListState,
     pub(crate) browse: Option<BrowseSession>,
     pub(crate) status: Option<String>,
@@ -82,6 +138,11 @@ pub struct App {
     pub(crate) status_scroll_row: u16,
     pub(crate) last_status_viewport_h: u16,
     pub(crate) last_status_scroll_row_max: u16,
+    /// Last-drawn rectangle for `/projects`-style session output (`None` until drawn).
+    pub(crate) session_output_rect: Option<Rect>,
+    /// `/tenants` or `/organizations` interactive table (exclusive with [`Self::browse`]).
+    pub(crate) listing_picker: Option<ListingPicker>,
+    pub(crate) listing_list_state: ListState,
 }
 
 impl App {
@@ -95,6 +156,23 @@ impl App {
         }
     }
 
+    pub(crate) fn clear_listing_picker(&mut self) {
+        self.listing_picker = None;
+        self.listing_list_state.select(None);
+    }
+
+    fn listing_exclusive(&self, palette: &Option<Vec<usize>>) -> bool {
+        self.listing_picker.is_some() && palette.as_ref().map_or(true, |cmds| cmds.is_empty())
+    }
+
+    fn sync_listing_picker_selection(&mut self) {
+        let len = self.listing_picker.as_ref().map(ListingPicker::row_count).unwrap_or(0);
+        match self.listing_list_state.selected() {
+            Some(s) if s < len => {}
+            _ if len > 0 => self.listing_list_state.select(Some(0)),
+            _ => self.listing_list_state.select(None),
+        }
+    }
     fn browse_exclusive(&self, palette: &Option<Vec<usize>>) -> bool {
         self.browse.is_some() && palette.as_ref().map_or(true, |cmds| cmds.is_empty())
     }
@@ -105,6 +183,8 @@ impl App {
             .map(|b| match &b.step {
                 BrowseStep::PickOrganization => b.organizations.len(),
                 BrowseStep::PickTenant { tenants, .. } => tenants.len(),
+                BrowseStep::PickProject { projects, .. } => projects.len(),
+                BrowseStep::PickEnvironment { environments, .. } => environments.len(),
             })
             .unwrap_or(0)
     }
@@ -123,8 +203,9 @@ impl App {
         let Some(mut session) = self.browse.take() else {
             return Ok(());
         };
-        match session.step {
-            BrowseStep::PickOrganization => match session.activate_organization(sel) {
+
+        if matches!(session.step, BrowseStep::PickOrganization) {
+            match session.activate_organization(sel) {
                 Ok(advisory) => {
                     self.browse = Some(session);
                     self.browse_list_state.select(Some(0));
@@ -141,8 +222,39 @@ impl App {
                     self.status_err = true;
                     self.status_clear_at = None;
                 }
-            },
-            BrowseStep::PickTenant { .. } => match session.activate_tenant_choice(sel) {
+            }
+        } else if matches!(session.step, BrowseStep::PickTenant { .. }) {
+            match session.advance_from_tenant(sel) {
+                Ok(()) => {
+                    self.browse = Some(session);
+                    self.status = None;
+                    self.status_err = false;
+                    self.browse_list_state.select(Some(0));
+                    self.sync_browse_list_selection();
+                }
+                Err(e) => {
+                    self.browse = Some(session);
+                    self.status = Some(format!("{e:#}"));
+                    self.status_err = true;
+                }
+            }
+        } else if matches!(session.step, BrowseStep::PickProject { .. }) {
+            match session.advance_from_project(sel) {
+                Ok(()) => {
+                    self.browse = Some(session);
+                    self.status = None;
+                    self.status_err = false;
+                    self.browse_list_state.select(Some(0));
+                    self.sync_browse_list_selection();
+                }
+                Err(e) => {
+                    self.browse = Some(session);
+                    self.status = Some(format!("{e:#}"));
+                    self.status_err = true;
+                }
+            }
+        } else if matches!(session.step, BrowseStep::PickEnvironment { .. }) {
+            match session.finalize_environment(sel) {
                 Ok(text) => {
                     self.status = Some(text);
                     self.status_err = false;
@@ -154,9 +266,113 @@ impl App {
                     self.status = Some(format!("{e:#}"));
                     self.status_err = true;
                 }
-            },
+            }
         }
         Ok(())
+    }
+
+    fn handle_listing_enter(&mut self) -> Result<()> {
+        use authdog_cli::session_store;
+
+        let picker = match self.listing_picker.take() {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        let sel = self.listing_list_state.selected().unwrap_or(0);
+        self.listing_list_state.select(None);
+
+        match picker {
+            ListingPicker::Tenants {
+                rows,
+                endpoint,
+                credentials_note,
+            } => {
+                if rows.is_empty() {
+                    let mut msg = format!("Tenants ({endpoint})\n(No rows.)");
+                    ListingPicker::append_credentials_footer(&mut msg, credentials_note.as_ref());
+                    self.status = Some(msg);
+                    self.status_err = false;
+                    return Ok(());
+                }
+                let Some(row) = rows.get(sel) else {
+                    self.status =
+                        Some(format!("Tenants ({endpoint})\n(Invalid selection; run /tenants.)"));
+                    self.status_err = true;
+                    return Ok(());
+                };
+                let primary = tenant_row_primary(row);
+                match session_store::set_current_tenant_id(Some(row.id.clone())) {
+                    Ok(()) => {
+                        let mut ok = format!("Current tenant set to `{}`\n{}", row.id, primary);
+                        ListingPicker::append_credentials_footer(&mut ok, credentials_note.as_ref());
+                        self.status = Some(ok);
+                        self.status_err = false;
+                    }
+                    Err(e) => {
+                        let mut err = format!("Could not save tenant:\n{e:#}");
+                        ListingPicker::append_credentials_footer(&mut err, credentials_note.as_ref());
+                        self.status = Some(err);
+                        self.status_err = true;
+                    }
+                }
+            }
+            ListingPicker::Organizations {
+                rows,
+                endpoint,
+                credentials_note,
+            } => {
+                if rows.is_empty() {
+                    let mut msg = format!("Organizations ({endpoint})\n(No rows.)");
+                    ListingPicker::append_credentials_footer(&mut msg, credentials_note.as_ref());
+                    self.status = Some(msg);
+                    self.status_err = false;
+                    return Ok(());
+                }
+                let Some(row) = rows.get(sel) else {
+                    self.status = Some(format!(
+                        "Organizations ({endpoint})\n(Invalid selection; run /organizations.)"
+                    ));
+                    self.status_err = true;
+                    return Ok(());
+                };
+                let prim = row.display_primary();
+                let mut text = format!("Organization (`{endpoint}`)\n  id:\n    {}\n  label:\n    {prim}", row.id);
+                ListingPicker::append_credentials_footer(&mut text, credentials_note.as_ref());
+                self.status = Some(text);
+                self.status_err = false;
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_listing_picker_panel(&mut self, f: &mut ratatui::Frame<'_>, area: Rect, picker: &ListingPicker) {
+        self.sync_listing_picker_selection();
+        let vw = usize::from(area.width.max(3).saturating_sub(4));
+        let items: Vec<ListItem> = match picker {
+            ListingPicker::Tenants { rows, .. } => rows
+                .iter()
+                .map(|t| ListItem::new(browse_tenant_line(t, vw)))
+                .collect(),
+            ListingPicker::Organizations { rows, .. } => rows
+                .iter()
+                .map(|o| ListItem::new(browse_org_line(o, vw)))
+                .collect(),
+        };
+
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(BORDER)
+                    .title(picker.block_title())
+                    .style(Style::default().bg(SURFACE_HI)),
+            )
+            .highlight_style(Style::default().bg(SEL_BG).fg(SEL_FG).bold())
+            .highlight_symbol("› ");
+
+        f.render_stateful_widget(list, area, &mut self.listing_list_state);
+        self.last_status_viewport_h = area.height.saturating_sub(2).max(1);
+        self.last_status_scroll_row_max = 0;
     }
 
     pub fn run(mut self, term: &mut DefaultTerminal) -> Result<()> {
@@ -172,6 +388,7 @@ impl App {
 
     fn draw(&mut self, f: &mut ratatui::Frame<'_>) {
         let area = f.area();
+        self.session_output_rect = None;
         f.render_widget(Clear, area);
 
         let base = Block::default().style(Style::default().bg(BG));
@@ -190,6 +407,7 @@ impl App {
 
         let palette = slash_palette_indices(self.input.value());
         let browse_open = self.browse.is_some();
+        let listing_open = self.listing_picker.is_some();
 
         let (banner_lines, banner_h) = figlet_banner_lines(outer.width);
 
@@ -224,7 +442,7 @@ impl App {
 
         self.draw_session_output(f, spacer);
 
-        self.draw_input_and_cursor(f, input_chunk, browse_open);
+        self.draw_input_and_cursor(f, input_chunk, browse_open, listing_open);
 
         let hint_line = if browse_open {
             Line::from(vec![
@@ -235,6 +453,16 @@ impl App {
                 " open · ".into(),
                 "Esc".bold(),
                 " back / exit browse · Ctrl+C quit".dim(),
+            ])
+        } else if listing_open {
+            Line::from(vec![
+                "Listing ".into(),
+                "↑↓".dim(),
+                " pick · ".into(),
+                "Enter".bold(),
+                " choose · ".into(),
+                "Esc".bold(),
+                " close · Ctrl+C quit".dim(),
             ])
         } else {
             let mut hint = vec![
@@ -255,6 +483,8 @@ impl App {
                     "Home/End",
                     Style::default().fg(TXT).add_modifier(Modifier::BOLD),
                 ));
+                hint.push(Span::styled(" · ", Style::default().fg(TXT_DIM)));
+                hint.push(Span::styled("Wheel", Style::default().fg(TXT).bold()));
                 hint.push(Span::styled(" output", Style::default().fg(TXT_DIM)));
             }
             Line::from(hint)
@@ -282,10 +512,20 @@ impl App {
         area: Rect,
         banner_lines: Vec<Line<'static>>,
     ) {
+        fn cli_tagline() -> String {
+            format!(
+                "CLI . Version ({}) . ({}) . {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                option_env!("AUTHDOG_CLI_MONTH_YEAR").unwrap_or("unknown-month-year"),
+                option_env!("AUTHDOG_CLI_BUILD_GUID").unwrap_or("00000000-0000-4000-8000-000000000002"),
+                option_env!("AUTHDOG_CLI_GIT_SHA").unwrap_or("unknown-git-sha"),
+            )
+        }
+
         let mut lines = banner_lines;
         lines.push(Line::default());
         lines.push(Line::from(vec![Span::styled(
-            concat!("CLI . Version (", env!("CARGO_PKG_VERSION"), ")"),
+            cli_tagline(),
             Style::default().fg(TXT_DIM).italic(),
         )]));
         lines.push(Line::default());
@@ -310,6 +550,11 @@ impl App {
     fn draw_session_output(&mut self, f: &mut ratatui::Frame<'_>, area: Rect) {
         if area.height < 3 || area.width < 14 {
             f.render_widget(Paragraph::new("").style(Style::default().bg(BG)), area);
+            return;
+        }
+
+        if let Some(picker) = self.listing_picker.clone() {
+            self.draw_listing_picker_panel(f, area, &picker);
             return;
         }
 
@@ -362,7 +607,10 @@ impl App {
             .border_style(BORDER)
             .title(Line::from(vec![
                 Span::styled("Session output", Style::default().fg(TXT).bold()),
-                Span::styled(" · PgUp/PgDn · Home/End", Style::default().fg(TXT_DIM)),
+                Span::styled(
+                    " · PgUp/PgDn · Wheel · Home/End",
+                    Style::default().fg(TXT_DIM),
+                ),
             ]))
             .style(Style::default().bg(SURFACE));
 
@@ -377,6 +625,8 @@ impl App {
         self.status_scroll_row = self.status_scroll_row.min(vmax_u16);
         self.last_status_viewport_h = inner_area.height.max(1);
         self.last_status_scroll_row_max = vmax_u16;
+
+        self.session_output_rect = Some(area);
 
         let paragraph = Paragraph::new(lines)
             .style(Style::default().bg(SURFACE))
@@ -448,6 +698,14 @@ impl App {
                 .iter()
                 .map(|t| ListItem::new(browse_tenant_line(t, vw)))
                 .collect(),
+            BrowseStep::PickProject { projects, .. } => projects
+                .iter()
+                .map(|p| ListItem::new(browse_project_line(p, vw)))
+                .collect(),
+            BrowseStep::PickEnvironment { environments, .. } => environments
+                .iter()
+                .map(|e| ListItem::new(browse_env_line(e, vw)))
+                .collect(),
         };
 
         let block = Block::default()
@@ -498,10 +756,18 @@ impl App {
         f.render_stateful_widget(list, area, &mut self.list_state);
     }
 
-    fn draw_input_and_cursor(&self, f: &mut ratatui::Frame<'_>, area: Rect, browse_open: bool) {
+    fn draw_input_and_cursor(
+        &self,
+        f: &mut ratatui::Frame<'_>,
+        area: Rect,
+        browse_open: bool,
+        listing_open: bool,
+    ) {
         const PLACEHOLDER: &str = "Add a follow-up";
         const PLACEHOLDER_BROWSE: &str =
             "/browse · ↑↓ Enter · Esc to go back or exit browse · /slash still works";
+        const PLACEHOLDER_LISTING: &str =
+            "↑↓ pick row · Enter choose · Esc close list · /slash still works";
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -535,6 +801,8 @@ impl App {
 
         let placeholder = if browse_open {
             PLACEHOLDER_BROWSE
+        } else if listing_open {
+            PLACEHOLDER_LISTING
         } else {
             PLACEHOLDER
         };
@@ -567,6 +835,7 @@ impl App {
                 }
                 let palette = slash_palette_indices(self.input.value());
                 let browse_exclusive = self.browse_exclusive(&palette);
+                let listing_exclusive = self.listing_exclusive(&palette);
                 match ke.code {
                     KeyCode::Char('c') if ke.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.quit = true;
@@ -578,20 +847,22 @@ impl App {
                             self.list_state.select(None);
                             return Ok(());
                         }
-                        if self.browse.is_some() {
-                            let mut exited = false;
-                            if let Some(ref mut sess) = self.browse {
-                                if sess.pop_to_organizations() {
+                        if listing_exclusive {
+                            self.clear_listing_picker();
+                            return Ok(());
+                        }
+                        if let Some(ref mut sess) = self.browse {
+                            match sess.pop_navigation() {
+                                BrowsePopOutcome::SteppedBack => {
                                     self.status = None;
                                     self.status_err = false;
                                     self.browse_list_state.select(Some(0));
                                     self.sync_browse_list_selection();
-                                    exited = true;
                                 }
-                            }
-                            if !exited {
-                                self.browse = None;
-                                self.browse_list_state.select(None);
+                                BrowsePopOutcome::ExitedBrowse => {
+                                    self.browse = None;
+                                    self.browse_list_state.select(None);
+                                }
                             }
                             return Ok(());
                         }
@@ -599,6 +870,10 @@ impl App {
                         return Ok(());
                     }
                     KeyCode::Enter => {
+                        if listing_exclusive {
+                            self.handle_listing_enter()?;
+                            return Ok(());
+                        }
                         if browse_exclusive {
                             self.handle_browse_enter()?;
                             return Ok(());
@@ -653,6 +928,12 @@ impl App {
                     KeyCode::Up if browse_exclusive => {
                         self.browse_list_state.select_previous();
                     }
+                    KeyCode::Down if listing_exclusive => {
+                        self.listing_list_state.select_next();
+                    }
+                    KeyCode::Up if listing_exclusive => {
+                        self.listing_list_state.select_previous();
+                    }
                     KeyCode::Down if palette.as_ref().is_some_and(|v| !v.is_empty()) => {
                         self.list_state.select_next();
                     }
@@ -682,7 +963,8 @@ impl App {
                     KeyCode::PageUp
                         if self.status.is_some()
                             && palette.as_ref().is_none_or(|v| v.is_empty())
-                            && self.browse.is_none() =>
+                            && self.browse.is_none()
+                            && self.listing_picker.is_none() =>
                     {
                         let step = if self.last_status_viewport_h > 0 {
                             self.last_status_viewport_h
@@ -695,7 +977,8 @@ impl App {
                     KeyCode::PageDown
                         if self.status.is_some()
                             && palette.as_ref().is_none_or(|v| v.is_empty())
-                            && self.browse.is_none() =>
+                            && self.browse.is_none()
+                            && self.listing_picker.is_none() =>
                     {
                         let step = if self.last_status_viewport_h > 0 {
                             self.last_status_viewport_h
@@ -711,7 +994,8 @@ impl App {
                     KeyCode::Home
                         if self.status.is_some()
                             && palette.as_ref().is_none_or(|v| v.is_empty())
-                            && self.browse.is_none() =>
+                            && self.browse.is_none()
+                            && self.listing_picker.is_none() =>
                     {
                         self.status_scroll_row = 0;
                         return Ok(());
@@ -719,7 +1003,8 @@ impl App {
                     KeyCode::End
                         if self.status.is_some()
                             && palette.as_ref().is_none_or(|v| v.is_empty())
-                            && self.browse.is_none() =>
+                            && self.browse.is_none()
+                            && self.listing_picker.is_none() =>
                     {
                         self.status_scroll_row = self.last_status_scroll_row_max;
                         return Ok(());
@@ -727,8 +1012,40 @@ impl App {
                     _ => {}
                 }
 
-                if !browse_exclusive {
+                if !browse_exclusive && !listing_exclusive {
                     let _ = self.input.handle_event(&ev);
+                }
+            }
+            Event::Mouse(me) => {
+                if self.browse.is_some() || self.listing_picker.is_some() {
+                    return Ok(());
+                }
+                let palette = slash_palette_indices(self.input.value());
+                if self.status.is_none() || palette.as_ref().is_some_and(|v| !v.is_empty()) {
+                    return Ok(());
+                }
+                let Some(rect) = self.session_output_rect else {
+                    return Ok(());
+                };
+                if !rect_contains(rect, me.column, me.row) {
+                    return Ok(());
+                }
+                let dir: i32 = match me.kind {
+                    MouseEventKind::ScrollUp => -1,
+                    MouseEventKind::ScrollDown => 1,
+                    _ => return Ok(()),
+                };
+                let lines = i32::from(wheel_scroll_lines(self.last_status_viewport_h));
+                let delta = dir.saturating_mul(lines);
+                if delta < 0 {
+                    self.status_scroll_row = self
+                        .status_scroll_row
+                        .saturating_sub((-delta) as u16);
+                } else {
+                    self.status_scroll_row = cmp::min(
+                        self.status_scroll_row.saturating_add(delta as u16),
+                        self.last_status_scroll_row_max,
+                    );
                 }
             }
             _ => {}
@@ -771,6 +1088,29 @@ impl App {
     }
 }
 
+/// Terminal cells per wheel notch (fraction of the session viewport, at least 1 row).
+fn wheel_scroll_lines(viewport_h: u16) -> u16 {
+    let h = viewport_h.max(1);
+    cmp::max(1, h / 5)
+}
+
+fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
+    col >= r.x
+        && col < r.x.saturating_add(r.width)
+        && row >= r.y
+        && row < r.y.saturating_add(r.height)
+}
+
+fn tenant_row_primary(t: &TenantRow) -> String {
+    if let Some(ref n) = t.name {
+        let nt = n.trim();
+        if !nt.is_empty() && nt != t.id {
+            return format!("{nt} ({})", t.id);
+        }
+    }
+    t.id.clone()
+}
+
 fn browse_block_title(session: &BrowseSession) -> Line<'static> {
     match &session.step {
         BrowseStep::PickOrganization => Line::from(vec![
@@ -790,6 +1130,33 @@ fn browse_block_title(session: &BrowseSession) -> Line<'static> {
                 Style::default().fg(TXT),
             ),
             Span::styled(format!(" · {} rows", tenants.len()), TXT_DIM),
+        ]),
+        BrowseStep::PickProject {
+            tenant_summary,
+            projects,
+            ..
+        } => Line::from(vec![
+            Span::styled("Projects · ", Style::default().fg(TXT).bold()),
+            Span::styled(
+                truncate_vis(tenant_summary.as_str(), 36),
+                Style::default().fg(TXT),
+            ),
+            Span::styled(format!(" · {} rows", projects.len()), TXT_DIM),
+        ]),
+        BrowseStep::PickEnvironment {
+            application_summary,
+            environments,
+            tenant_summary,
+            ..
+        } => Line::from(vec![
+            Span::styled("Environments · ", Style::default().fg(TXT).bold()),
+            Span::styled(
+                truncate_vis(application_summary.as_str(), 28),
+                Style::default().fg(TXT),
+            ),
+            Span::styled(" · ", TXT_DIM),
+            Span::styled(truncate_vis(tenant_summary.as_str(), 20), TXT_DIM),
+            Span::styled(format!(" · {} rows", environments.len()), TXT_DIM),
         ]),
     }
 }
@@ -814,18 +1181,55 @@ fn browse_org_line(o: &OrgRow, vw: usize) -> Line<'static> {
 }
 
 fn browse_tenant_line(t: &TenantRow, vw: usize) -> Line<'static> {
-    let label = if let Some(ref n) = t.name {
-        let n = n.trim();
-        if n.is_empty() {
-            t.id.clone()
-        } else {
-            format!(
-                "{n}  ·  {}",
-                truncate_vis(t.id.as_str(), vw.saturating_sub(n.width() + 5))
-            )
-        }
+    Line::from(Span::styled(
+        truncate_vis(&tenant_row_primary(t), vw),
+        Style::default().fg(TXT),
+    ))
+}
+
+fn browse_project_line(p: &ProjectRow, vw: usize) -> Line<'static> {
+    let prim = p.display_primary();
+    let type_bit = p
+        .project_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|ty| format!("  ({ty})"))
+        .unwrap_or_default();
+    let label = if prim.as_str() == p.id.as_str() {
+        format!("{prim}{type_bit}")
     } else {
-        t.id.clone()
+        format!(
+            "{prim}  ·  {}{type_bit}",
+            truncate_vis(
+                p.id.as_str(),
+                vw.saturating_sub(
+                    prim
+                        .width()
+                        .saturating_add(type_bit.width())
+                        .saturating_add(8),
+                ),
+            )
+        )
+    };
+    Line::from(Span::styled(
+        truncate_vis(&label, vw),
+        Style::default().fg(TXT),
+    ))
+}
+
+fn browse_env_line(e: &EnvironmentRow, vw: usize) -> Line<'static> {
+    let prim = e.display_primary();
+    let label = if prim.as_str() == e.id.as_str() {
+        e.id.clone()
+    } else {
+        format!(
+            "{prim}  ·  {}",
+            truncate_vis(
+                e.id.as_str(),
+                vw.saturating_sub(prim.width().saturating_add(5)),
+            )
+        )
     };
     Line::from(Span::styled(
         truncate_vis(&label, vw),

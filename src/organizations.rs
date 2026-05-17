@@ -5,7 +5,7 @@ use reqwest::blocking::Client;
 use serde_json::Value;
 use std::time::Duration;
 
-const ORGANIZATIONS_PATH: &str = "/v1/organizations";
+pub const ORGANIZATIONS_PATH: &str = "/v1/organizations";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrgRow {

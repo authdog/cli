@@ -378,6 +378,8 @@ pub fn run_browser_login_blocking(cfg: &CliAuthConfig) -> Result<()> {
                             access_token,
                             refresh_token,
                             current_tenant_id: prev_tenant,
+                            current_application_id: None,
+                            current_environment_id: None,
                         })?;
                         return Ok(());
                     }

@@ -1,6 +1,6 @@
 //! Slash-command dispatch into [`crate::app::App`] session output.
 
-use crate::app::App;
+use crate::app::{App, ListingPicker};
 use crate::commands::registry::CMDS;
 
 use authdog_cli::cli_login;
@@ -39,6 +39,13 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
         .unwrap_or("")
         .trim_start_matches('/')
         .to_ascii_lowercase();
+
+    if !matches!(
+        first.as_str(),
+        "tenants" | "organizations" | "orgs" | "browse" | "navigator"
+    ) {
+        app.clear_listing_picker();
+    }
 
     match first.as_str() {
         "quit" | "q" => {
@@ -105,13 +112,31 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
         },
         "tenants" => match session_store::load_session() {
             Ok(Some(s)) => {
-                app.status = Some(tenants::compose_tenants_report(
-                    &s.access_token,
-                    session_store::credentials_path()
-                        .ok()
-                        .map(|path| format!("credentials file: {}", path.display())),
-                ));
-                app.status_err = false;
+                app.browse = None;
+                let cred_note = session_store::credentials_path()
+                    .ok()
+                    .map(|path| format!("credentials file: {}", path.display()));
+                let base = whoami::api_origin().trim_end_matches('/').to_string();
+                let endpoint = format!("{base}{}", tenants::TENANTS_PATH);
+                match tenants::fetch_tenants(&s.access_token) {
+                    Ok(json) => {
+                        let rows = tenants::tenant_rows_from_body(&json);
+                        app.listing_picker = Some(ListingPicker::Tenants {
+                            rows,
+                            endpoint,
+                            credentials_note: cred_note,
+                        });
+                        app.listing_list_state.select(Some(0));
+                        app.status = None;
+                        app.status_err = false;
+                    }
+                    Err(err) => {
+                        app.status = Some(format!(
+                            "── Tenants ({endpoint}) ──\n  (could not load) {err:#}"
+                        ));
+                        app.status_err = true;
+                    }
+                }
                 SubmitEffect::None
             }
             Ok(None) => {
@@ -261,6 +286,7 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
         },
         "browse" | "navigator" => match session_store::load_session() {
             Ok(Some(s)) => {
+                app.clear_listing_picker();
                 app.status_clear_at = None;
                 app.status = None;
                 app.status_err = false;
@@ -283,13 +309,31 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
         },
         "organizations" | "orgs" => match session_store::load_session() {
             Ok(Some(s)) => {
-                app.status = Some(organizations::compose_organizations_report(
-                    &s.access_token,
-                    session_store::credentials_path()
-                        .ok()
-                        .map(|path| format!("credentials file: {}", path.display())),
-                ));
-                app.status_err = false;
+                app.browse = None;
+                let cred_note = session_store::credentials_path()
+                    .ok()
+                    .map(|path| format!("credentials file: {}", path.display()));
+                let base = whoami::api_origin().trim_end_matches('/').to_string();
+                let endpoint = format!("{base}{}", organizations::ORGANIZATIONS_PATH);
+                match organizations::fetch_organizations(&s.access_token) {
+                    Ok(json) => {
+                        let rows = organizations::organization_rows_from_body(&json);
+                        app.listing_picker = Some(ListingPicker::Organizations {
+                            rows,
+                            endpoint,
+                            credentials_note: cred_note,
+                        });
+                        app.listing_list_state.select(Some(0));
+                        app.status = None;
+                        app.status_err = false;
+                    }
+                    Err(err) => {
+                        app.status = Some(format!(
+                            "── Organizations ({endpoint}) ──\n  (could not load) {err:#}"
+                        ));
+                        app.status_err = true;
+                    }
+                }
                 SubmitEffect::None
             }
             Ok(None) => {
@@ -323,8 +367,20 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                     .filter(|t| !t.is_empty())
                     .map(|id| format!("\nCurrent tenant: {id}"))
                     .unwrap_or_else(|| "\nCurrent tenant: (none)".into());
+                let app_line = s
+                    .current_application_id
+                    .as_deref()
+                    .filter(|t| !t.is_empty())
+                    .map(|id| format!("\nCurrent project (application): {id}"))
+                    .unwrap_or_else(|| "\nCurrent project (application): (none)".into());
+                let env_line = s
+                    .current_environment_id
+                    .as_deref()
+                    .filter(|t| !t.is_empty())
+                    .map(|id| format!("\nCurrent environment: {id}"))
+                    .unwrap_or_else(|| "\nCurrent environment: (none)".into());
                 app.status = Some(format!(
-                    "Session file: {path_show}\nAccess token preview: {preview}… ({} chars)\nRefresh token: {} chars{tenant_line}",
+                    "Session file: {path_show}\nAccess token preview: {preview}… ({} chars)\nRefresh token: {} chars{tenant_line}{app_line}{env_line}",
                     s.access_token.len(),
                     s.refresh_token.len(),
                 ));

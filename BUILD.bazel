@@ -35,7 +35,12 @@ _BINARY_EXTRA_CRATES = [
 
 _DESKTOP_FEATURES = ["desktop"]
 
-rustc_pkg_version_env = {"CARGO_PKG_VERSION": "0.1.0"}
+rustc_pkg_env = {
+    "CARGO_PKG_VERSION": "0.1.0",
+    "AUTHDOG_CLI_MONTH_YEAR": "bazel-unknown",
+    "AUTHDOG_CLI_BUILD_GUID": "00000000-0000-4000-8000-0000000000bzl",
+    "AUTHDOG_CLI_GIT_SHA": "bazel-unknown",
+}
 
 rust_library(
     name = "authdog_cli_lib",
@@ -50,7 +55,7 @@ rust_library(
     crate_features = _DESKTOP_FEATURES,
     crate_name = "authdog_cli",
     edition = "2021",
-    rustc_env = rustc_pkg_version_env,
+    rustc_env = rustc_pkg_env,
     deps = crate_deps(package_name="", deps=_LIB_CRATES),
 )
 
@@ -64,7 +69,7 @@ rust_binary(
     compile_data = glob(["assets/**"]),
     crate_features = _DESKTOP_FEATURES,
     edition = "2021",
-    rustc_env = rustc_pkg_version_env,
+    rustc_env = rustc_pkg_env,
     deps =
         [
             ":authdog_cli_lib",
@@ -77,5 +82,5 @@ rust_test(
     crate = ":authdog_cli_lib",
     crate_features = _DESKTOP_FEATURES,
     edition = "2021",
-    rustc_env = rustc_pkg_version_env,
+    rustc_env = rustc_pkg_env,
 )
