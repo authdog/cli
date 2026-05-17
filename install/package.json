@@ -1,0 +1,14 @@
+{
+  "name": "authdog-cli-install-worker",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250531.0",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.44.0"
+  }
+}

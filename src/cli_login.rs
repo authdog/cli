@@ -304,23 +304,30 @@ fn accept_loopback_grant(listener: &TcpListener, deadline: Instant) -> Result<St
 
 pub fn suspend_tui_for_shell_io() -> Result<()> {
     use crossterm::cursor::Show;
+    use crossterm::event::DisableMouseCapture;
     use crossterm::execute;
     use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
     use std::io::{stdout, Write};
     stdout().flush()?;
     disable_raw_mode().context("disable_raw_mode")?;
-    execute!(stdout(), LeaveAlternateScreen, Show).context("leave alt screen")?;
+    execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen, Show)
+        .context("leave alt screen")?;
     Ok(())
 }
 
 pub fn resume_tui_io() -> Result<()> {
     use crossterm::cursor::Hide;
+    use crossterm::event::EnableMouseCapture;
     use crossterm::execute;
     use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
     use std::io::{stderr, stdout, Write};
     // Match `ratatui::try_init()` order so raw mode + alternate screen match startup.
     enable_raw_mode().context("enable_raw_mode")?;
     execute!(stdout(), EnterAlternateScreen, Hide).context("enter alt screen")?;
+    // Match `main.rs`: restore wheel/trackpad scrolling after OAuth.
+    if let Err(e) = execute!(stdout(), EnableMouseCapture) {
+        eprintln!("note: mouse/wheel scrolling unavailable ({e})");
+    }
     stdout().flush().context("flush stdout after resume")?;
     stderr().flush().context("flush stderr after resume")?;
     Ok(())

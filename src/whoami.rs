@@ -519,12 +519,12 @@ pub fn format_identity_pretty_display(v: &Value) -> String {
         .join("\n\n")
 }
 
-/// Tabular "**Pretty**" text plus compact JSON for Raw (**`/whoami`** Pretty vs Raw tabs).
+/// Tabular "**Pretty**" text plus indented JSON (**Raw** tab) for **`/whoami`** Pretty vs Raw tabs.
 #[cfg(feature = "desktop")]
 pub fn format_identity_json_pair(v: &Value) -> (String, String) {
     let pretty = format_identity_pretty_display(v);
-    let compact = serde_json::to_string(v).unwrap_or_else(|_| "{}".into());
-    (pretty, compact)
+    let raw_json = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+    (pretty, raw_json)
 }
 
 /// Full **`/whoami`** output: **`GET /v1/userinfo`** as tabular Pretty text (+ optional **`credentials file:`** note).
@@ -589,6 +589,21 @@ mod tests {
         assert!(t.contains("Emails"));
         assert!(t.contains('#'));
         assert!(t.contains("a@example.com"));
+    }
+
+    #[test]
+    fn identity_raw_json_is_pretty_printed() {
+        let v = serde_json::json!({
+            "meta": { "code": 200_u64 },
+            "user": { "id": "u1" }
+        });
+        let (_, raw) = format_identity_json_pair(&v);
+        assert!(
+            raw.contains('\n'),
+            "expected indented JSON with newlines, got single line"
+        );
+        assert!(raw.contains("  \"meta\""));
+        assert!(raw.contains("  \"user\""));
     }
 
     #[test]

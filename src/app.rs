@@ -144,7 +144,7 @@ impl ListingPicker {
     }
 }
 
-/// Pretty (**tabular**) vs compact JSON (**Raw** tab) for **`/whoami`**.
+/// Pretty (**tabular**) vs indented JSON (**Raw** tab) for **`/whoami`**.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum WhoamiJsonTab {
     #[default]
@@ -157,7 +157,7 @@ pub(crate) struct WhoamiOutputPane {
     pub(crate) endpoint_note: String,
     /// Tabular (**Pretty**) REST envelope text (**`/whoami`** only).
     pub(crate) pretty_json: String,
-    /// Compact JSON (**Raw** tab).
+    /// Indented JSON object matching the server payload (**Raw** tab).
     pub(crate) raw_json: String,
     pub(crate) credentials_note: Option<String>,
     pub(crate) tab: WhoamiJsonTab,

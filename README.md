@@ -16,6 +16,10 @@ Optional:
 
 When a tag like **`0.1.0`** or **`0.1.0-beta.1`** (bare semver — **no** leading **`v`**) is pushed to **`origin`** on GitHub, the **Release** workflow (`.github/workflows/release.yml`) cross-builds **`authdog-cli`**, attaches archives + **`checksums.sha256`**, and creates/updates that tag’s **[GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)**. Use **`make tag-push`** (or Actions **Create release tag**) so the tag matches `./Cargo.toml` `[package].version` and the **`[package.metadata.authdog-release]`** rules. Failed runs can be retried from the Actions UI (**Run workflow** with the existing tag).
 
+## HTTPS install Worker
+
+Prebuilt binaries can be installed via the Cloudflare Worker in **`install/`** (example: **`curl -fsSL https://cli.auth.dog/install | bash`** once routed). CI deploy: **`.github/workflows/cli-install-deploy.yml`**. Routes, env vars, and deployment steps are documented in **`install/SPEC.md`**.
+
 ## Build & run
 
 ```bash

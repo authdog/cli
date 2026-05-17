@@ -1,0 +1,17 @@
+# Cloudflare Worker: serves curl-friendly installers that pull binaries from GitHub Releases.
+# Example URL after attaching a custom domain + route: curl -fsSL https://cli.auth.dog/install | bash
+#
+# Deploy:
+#   cd install && npm install && npm run deploy
+#
+# Same Cloudflare account as platform-next Workers (authdog).
+
+name = "cli-install"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+account_id = "07cdb3d8cc681313ba8b3d915e35cd81"
+preview_urls = false
+
+[vars]
+GITHUB_REPO = "authdog/cli"
+BIN_NAME = "authdog-cli"
