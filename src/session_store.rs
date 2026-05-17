@@ -10,6 +10,9 @@ use std::path::PathBuf;
 pub struct StoredSession {
     pub access_token: String,
     pub refresh_token: String,
+    /// Tenant uuid selected for scoped commands (`/projects`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_tenant_id: Option<String>,
 }
 
 fn config_dir() -> Result<PathBuf> {
@@ -58,6 +61,13 @@ pub fn clear_session() -> Result<()> {
     Ok(())
 }
 
+/// Update **`credentials.json`** with a new current tenant id (must already be logged in).
+pub fn set_current_tenant_id(tenant_id: Option<String>) -> Result<()> {
+    let mut s = load_session()?.context("not logged in (no credentials.json)")?;
+    s.current_tenant_id = tenant_id;
+    save_session(&s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,10 +77,15 @@ mod tests {
         let s = StoredSession {
             access_token: "token-a".into(),
             refresh_token: "token-r".into(),
+            current_tenant_id: Some("tenant-uuid".into()),
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: StoredSession = serde_json::from_str(&json).unwrap();
         assert_eq!(back.access_token, "token-a");
+        assert_eq!(
+            back.current_tenant_id.as_deref(),
+            Some("tenant-uuid")
+        );
         assert_eq!(back.refresh_token, "token-r");
     }
 }

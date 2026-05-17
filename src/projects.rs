@@ -1,11 +1,9 @@
-//! `GET /v1/tenants` — tenants visible to the authenticated user (REST API).
+//! `GET /v1/tenants/{tenantId}/projects` — projects within a tenant (REST API).
 
 use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::time::Duration;
-
-const TENANTS_PATH: &str = "/v1/tenants";
 
 fn summarize_body_preview(body: &str, max: usize) -> String {
     if body.len() <= max {
@@ -27,7 +25,7 @@ fn append_cf_1003_ops_hint(mut message: String) -> String {
     message
 }
 
-fn tenants_error_body_preview(status: reqwest::StatusCode, body: &str) -> String {
+fn projects_error_body_preview(status: reqwest::StatusCode, body: &str) -> String {
     let base = if let Ok(v) = serde_json::from_str::<Value>(body) {
         let detail = v
             .get("detail")
@@ -49,16 +47,16 @@ fn tenants_error_body_preview(status: reqwest::StatusCode, body: &str) -> String
     append_cf_1003_ops_hint(base)
 }
 
-/// `GET …/v1/tenants` with the access token.
-pub fn fetch_tenants(access_token: &str) -> Result<Value> {
+/// `GET …/v1/tenants/{tenant_id}/projects` with the access token.
+pub fn fetch_projects(access_token: &str, tenant_id: &str) -> Result<Value> {
     let origin = crate::whoami::api_origin();
     let base = origin.trim_end_matches('/');
-    let url = format!("{base}{TENANTS_PATH}");
+    let url = format!("{base}/v1/tenants/{tenant_id}/projects");
     let client = Client::builder()
         .timeout(Duration::from_secs(15))
         .user_agent(concat!("authdog-cli/", env!("CARGO_PKG_VERSION")))
         .build()
-        .context("build HTTP client for tenants")?;
+        .context("build HTTP client for projects")?;
     let resp = client
         .get(&url)
         .header(reqwest::header::ACCEPT, "application/json")
@@ -66,48 +64,30 @@ pub fn fetch_tenants(access_token: &str) -> Result<Value> {
         .send()
         .with_context(|| format!("GET {url}"))?;
     let status = resp.status();
-    let body = resp.text().context("read tenants response body")?;
+    let body = resp.text().context("read projects response body")?;
     if !status.is_success() {
-        anyhow::bail!("{}", tenants_error_body_preview(status, &body))
+        anyhow::bail!("{}", projects_error_body_preview(status, &body))
     }
-    serde_json::from_str(&body).context("tenants response is not valid JSON")
+    serde_json::from_str(&body).context("projects response is not valid JSON")
 }
 
-/// Tenant ids from a **`GET /v1/tenants`** JSON body (`tenants` array or root array of objects).
-pub fn tenant_ids_from_body(body: &Value) -> Vec<String> {
-    let mut ids: Vec<String> = Vec::new();
-    let arrays: &[&[Value]] = if let Some(a) = body.get("tenants").and_then(|v| v.as_array()) {
-        &[a.as_slice()]
-    } else if let Some(a) = body.as_array() {
-        &[a.as_slice()]
-    } else {
-        &[]
-    };
-    for arr in arrays {
-        for item in *arr {
-            if let Some(id) = item.get("id").and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
-                ids.push(id.to_string());
-            }
-        }
-    }
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
-/// Text for **`/tenants`**: pretty JSON (+ optional credentials path line).
-pub fn compose_tenants_report(access_token: &str, credentials_file_note: Option<String>) -> String {
+/// Text for **`/projects`**: pretty JSON (+ optional credentials path line).
+pub fn compose_projects_report(
+    access_token: &str,
+    tenant_id: &str,
+    credentials_file_note: Option<String>,
+) -> String {
     let origin = crate::whoami::api_origin();
     let base_shown = origin.trim_end_matches('/');
-    let tenants_note = format!("{base_shown}{TENANTS_PATH}");
+    let projects_note = format!("{base_shown}/v1/tenants/{tenant_id}/projects");
 
-    let body = match fetch_tenants(access_token) {
+    let body = match fetch_projects(access_token, tenant_id) {
         Ok(ref v) => {
             let json = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
-            format!("── Tenants ({tenants_note}) ──\n{json}")
+            format!("── Projects ({projects_note}) ──\n{json}")
         }
         Err(err) => {
-            format!("── Tenants ({tenants_note}) ──\n  (could not load) {err:#}")
+            format!("── Projects ({projects_note}) ──\n  (could not load) {err:#}")
         }
     };
 
@@ -126,25 +106,16 @@ mod tests {
     #[test]
     fn cf_1003_detail_appends_ops_hint() {
         let body = r#"{"error":"Failed","detail":"403: error code: 1003 | 403: error code: 1003"}"#;
-        let s = tenants_error_body_preview(reqwest::StatusCode::FORBIDDEN, body);
+        let s = projects_error_body_preview(reqwest::StatusCode::FORBIDDEN, body);
         assert!(s.contains("error code: 1003"));
         assert!(s.contains("Hint (ops):"));
-        assert!(s.contains("mgt.authdog.com"));
-    }
-
-    #[test]
-    fn collects_ids_from_tenants_field() {
-        let v: Value =
-            serde_json::from_str(r#"{"tenants":[{"id":"a"},{"id":"b"},{"foo":1}]}"#).unwrap();
-        assert_eq!(tenant_ids_from_body(&v), vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]
     fn error_preview_extracts_rest_detail_json() {
-        let body = r#"{"error":"Failed to fetch tenants","detail":"upstream: graphql rejected"}"#;
-        let s = tenants_error_body_preview(reqwest::StatusCode::FORBIDDEN, body);
+        let body = r#"{"error":"Failed to fetch projects","detail":"upstream: graphql rejected"}"#;
+        let s = projects_error_body_preview(reqwest::StatusCode::FORBIDDEN, body);
         assert!(s.contains("403"), "expected status in preview: {s}");
-        assert!(s.contains("Failed to fetch tenants"), "{s}");
-        assert!(s.contains("graphql rejected"), "{s}");
+        assert!(s.contains("Failed to fetch projects"), "{s}");
     }
 }

@@ -9,12 +9,13 @@
     <title>Signed in — Authdog CLI</title>
     <style>
       :root {
-        --bg: #ffffff;
-        --card: #ffffff;
-        --line: #e5e7eb;
-        --text: #111827;
-        --text-secondary: #4b5563;
-        --text-muted: #6b7280;
+        --line: rgba(15, 23, 42, 0.1);
+        --text: #0f172a;
+        --text-secondary: #334155;
+        --text-muted: #64748b;
+        --glass-bg: rgba(255, 255, 255, 0.55);
+        --glass-border: rgba(255, 255, 255, 0.75);
+        --glass-highlight: rgba(255, 255, 255, 0.95);
       }
 
       *,
@@ -35,13 +36,20 @@
           "Helvetica Neue",
           Arial,
           sans-serif;
-        background: var(--bg);
         color: var(--text-secondary);
         display: flex;
         align-items: center;
         justify-content: center;
         padding: 2rem 1.25rem;
         -webkit-font-smoothing: antialiased;
+        background-color: #f1f5f9;
+        background-image:
+          radial-gradient(ellipse 95% 80% at 80% 36%, rgba(167, 139, 250, 0.42) 0%, transparent 58%),
+          radial-gradient(ellipse 85% 70% at 12% 90%, rgba(56, 189, 248, 0.38) 0%, transparent 52%),
+          radial-gradient(ellipse 110% 85% at 48% -8%, rgba(255, 255, 255, 0.95) 0%, transparent 50%),
+          linear-gradient(165deg, #f8fafc 0%, #eef2ff 38%, #e0f2fe 100%);
+        background-repeat: no-repeat;
+        background-size: cover;
       }
 
       .shell {
@@ -49,10 +57,26 @@
       }
 
       .card {
-        background: var(--card);
-        border: 1px solid var(--line);
-        border-radius: 8px;
+        position: relative;
+        background: var(--glass-bg);
+        border: 1px solid var(--glass-border);
+        border-radius: 14px;
         padding: 2rem 1.75rem 1.75rem;
+        box-shadow:
+          0 4px 6px rgba(15, 23, 42, 0.04),
+          0 20px 45px rgba(99, 102, 241, 0.08),
+          inset 0 1px 0 var(--glass-highlight);
+        -webkit-backdrop-filter: blur(18px) saturate(140%);
+        backdrop-filter: blur(18px) saturate(140%);
+      }
+
+      @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        .card {
+          background: rgba(255, 255, 255, 0.92);
+          box-shadow:
+            0 4px 6px rgba(15, 23, 42, 0.06),
+            0 20px 45px rgba(99, 102, 241, 0.1);
+        }
       }
 
       .brand-logo {

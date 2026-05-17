@@ -25,8 +25,12 @@ enum DocBlock {
 }
 
 /// Section titles immediately followed by JSON (`/v1/userinfo`, `/v1/tenants`, etc.).
-const JSON_SECTION_LINE_PREFIXES: &[&str] =
-    &["── Identity (", "── Tenants (", "── Organizations ("];
+const JSON_SECTION_LINE_PREFIXES: &[&str] = &[
+    "── Identity (",
+    "── Tenants (",
+    "── Organizations (",
+    "── Projects (",
+];
 
 fn line_opens_api_json_section(line: &str) -> bool {
     let t = line.trim_start();
@@ -409,6 +413,20 @@ mod tests {
                 .spans
                 .iter()
                 .any(|sp| sp.content.contains("\"name\"")),
+            "{lines:?}",
+        );
+    }
+
+    #[test]
+    fn projects_separator_switches_highlighting() {
+        let s = concat!(
+            "── Projects (https://example/v1/tenants/tid/projects) ──\n",
+            "{\"projects\":[]}\n",
+        );
+        let lines = styled_status_lines(s, pal(), false);
+        assert!(lines.len() >= 2);
+        assert!(
+            lines[1].spans.iter().any(|sp| sp.content.contains("projects")),
             "{lines:?}",
         );
     }

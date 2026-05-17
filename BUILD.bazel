@@ -30,6 +30,7 @@ _BINARY_EXTRA_CRATES = [
     "ratatui",
     "tui-input",
     "unicode-width",
+    "uuid",
 ]
 
 _DESKTOP_FEATURES = ["desktop"]
@@ -55,7 +56,8 @@ rust_library(
 
 rust_binary(
     name = "authdog-cli",
-    srcs = [
+    srcs = glob(["src/commands/**/*.rs"]) + [
+        "src/app.rs",
         "src/main.rs",
         "src/tui_output.rs",
     ],

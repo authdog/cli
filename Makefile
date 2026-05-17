@@ -1,4 +1,4 @@
-.PHONY: all build release run clean check fmt clippy test wasm tenants bazel-build bazel-test
+.PHONY: all build release run clean check fmt clippy test wasm tenants projects bazel-build bazel-test
 
 all: build
 
@@ -38,6 +38,10 @@ wasm:
 ## Run tests tied to tenants (substring match: TUI separators + tenants REST error shaping).
 tenants:
 	cargo test -p authdog-cli tenants
+
+## Run tests tied to projects (substring match: lib projects REST + TUI JSON banner).
+projects:
+	cargo test -p authdog-cli projects
 
 clean:
 	cargo clean

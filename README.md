@@ -1,6 +1,6 @@
 # Authdog CLI
 
-Interactive terminal CLI for **[Authdog](https://www.authdog.com)** session flows: OAuth sign-in in the browser with a localhost callback, session storage on disk, and quick calls to Identity / API helpers (`whoami`, tenants and organizations listings, JWT claim preview).
+Interactive terminal CLI for **[Authdog](https://www.authdog.com)** session flows: OAuth sign-in in the browser with a localhost callback, session storage on disk, and quick calls to Identity / API helpers (`whoami`, tenants, organizations, tenant-scoped projects, JWT claim preview).
 
 ## Requirements
 
@@ -28,8 +28,10 @@ cargo run               # launches the fullscreen TUI
 | `/logout`  | Deletes saved credentials locally |
 | `/whoami`  | Loads identity from **`GET …/v1/userinfo`** (API host below) plus optional JWT claim formatting |
 | `/tenants` | **`GET …/v1/tenants`** listing (JSON) |
+| `/tenant` | Show, set (`/tenant <uuid>`), or clear (`/tenant clear`) the **current tenant** stored in `credentials.json` (validated against `/tenants` when that request succeeds) |
+| `/projects` | **`GET …/v1/tenants/{tenantId}/projects`** (JSON); requires a current tenant from **`/tenant`** |
 | `/organizations` | **`GET …/v1/organizations`** listing (JSON); alias **`/orgs`** |
-| `/status`  | Credentials path + opaque token previews |
+| `/status`  | Credentials path, **current tenant** (if any), opaque token previews |
 | `/quit`    | Exit |
 
 ### Environment variables
@@ -38,7 +40,7 @@ cargo run               # launches the fullscreen TUI
 |----------|---------|
 | `AUTHDOG_IDENTITY_ORIGIN` | Identity host (default `https://identity.authdog.com`) |
 | `AUTHDOG_CONSOLE_ENVIRONMENT_ID` | Sign-in environment UUID (hosted console default wired in sources) |
-| `AUTHDOG_API_ORIGIN` | REST API origin for `/v1/userinfo`, `/v1/tenants`, `/v1/organizations` (default **`https://api.authdog.com`**) |
+| `AUTHDOG_API_ORIGIN` | REST API origin for `/v1/userinfo`, `/v1/tenants`, `/v1/tenants/{id}/projects`, `/v1/organizations` (default **`https://api.authdog.com`**) |
 
 ## Makefile targets
 
@@ -53,10 +55,11 @@ cargo run               # launches the fullscreen TUI
 | `make fmt` | `cargo fmt` |
 | **`make wasm`** | Release build of **`authdog-cli-wasm`** → `target/wasm32-unknown-unknown/release/authdog_cli_wasm.wasm` |
 | **`make tenants`** | Runs `cargo test` filtered on names containing **`tenants`** (TUI + tenants REST helpers) |
+| **`make projects`** | Runs `cargo test` filtered on names containing **`projects`** |
 
 ## Workspace layout
 
-- **`authdog-cli`** (`Cargo.toml`, `src/`) — library + **`authdog-cli`** binary (`required-features = ["desktop"]`).
+- **`authdog-cli`** (`Cargo.toml`, `src/`) — library + **`authdog-cli`** binary (`required-features = ["desktop"]`). The Ratatui UI lives under **`src/app.rs`**, **`src/tui_output.rs`**, and slash routing under **`src/commands/`** (`registry`, `dispatch`).
 - **`wasm/`** — minimal **`wasm-bindgen`** **`cdylib`** built on JWT helpers from the core crate (no terminal / OAuth).
 
 The desktop feature pulls Ratatui, Crossterm, blocking `reqwest`, OAuth loopback TCP, filesystem session store, etc. The WASM package depends on **`authdog-cli` with `default-features = false`**.
@@ -65,11 +68,12 @@ The desktop feature pulls Ratatui, Crossterm, blocking `reqwest`, OAuth loopback
 
 The WASM artefact exposes **JWT payload inspection helpers** (**signatures not verified**, same caveat as CLI claim previews). Use **`wasm-pack build`** inside `wasm/` if you want generated JS bindings for the browser.
 
-## `/tenants`, `/organizations`, and the REST API
+## `/tenants`, `/organizations`, `/projects`, and the REST API
 
 The CLI calls:
 
 - **`{AUTHDOG_API_ORIGIN}/v1/tenants`**
+- **`{AUTHDOG_API_ORIGIN}/v1/tenants/{tenantId}/projects`** (`/projects`, tenant id from **`/tenant`**)
 - **`{AUTHDOG_API_ORIGIN}/v1/organizations`** (`/organizations` or `/orgs`)
 
 Each request uses `Authorization: Bearer <access_token>`.
