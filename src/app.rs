@@ -10,9 +10,7 @@ use authdog_cli::projects::{EnvironmentRow, ProjectRow};
 use authdog_cli::tenants::TenantRow;
 
 use anyhow::{Context, Result};
-use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use figlet_rs::FIGlet;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::Stylize;
@@ -166,7 +164,11 @@ impl App {
     }
 
     fn sync_listing_picker_selection(&mut self) {
-        let len = self.listing_picker.as_ref().map(ListingPicker::row_count).unwrap_or(0);
+        let len = self
+            .listing_picker
+            .as_ref()
+            .map(ListingPicker::row_count)
+            .unwrap_or(0);
         match self.listing_list_state.selected() {
             Some(s) if s < len => {}
             _ if len > 0 => self.listing_list_state.select(Some(0)),
@@ -295,8 +297,9 @@ impl App {
                     return Ok(());
                 }
                 let Some(row) = rows.get(sel) else {
-                    self.status =
-                        Some(format!("Tenants ({endpoint})\n(Invalid selection; run /tenants.)"));
+                    self.status = Some(format!(
+                        "Tenants ({endpoint})\n(Invalid selection; run /tenants.)"
+                    ));
                     self.status_err = true;
                     return Ok(());
                 };
@@ -304,13 +307,19 @@ impl App {
                 match session_store::set_current_tenant_id(Some(row.id.clone())) {
                     Ok(()) => {
                         let mut ok = format!("Current tenant set to `{}`\n{}", row.id, primary);
-                        ListingPicker::append_credentials_footer(&mut ok, credentials_note.as_ref());
+                        ListingPicker::append_credentials_footer(
+                            &mut ok,
+                            credentials_note.as_ref(),
+                        );
                         self.status = Some(ok);
                         self.status_err = false;
                     }
                     Err(e) => {
                         let mut err = format!("Could not save tenant:\n{e:#}");
-                        ListingPicker::append_credentials_footer(&mut err, credentials_note.as_ref());
+                        ListingPicker::append_credentials_footer(
+                            &mut err,
+                            credentials_note.as_ref(),
+                        );
                         self.status = Some(err);
                         self.status_err = true;
                     }
@@ -336,7 +345,10 @@ impl App {
                     return Ok(());
                 };
                 let prim = row.display_primary();
-                let mut text = format!("Organization (`{endpoint}`)\n  id:\n    {}\n  label:\n    {prim}", row.id);
+                let mut text = format!(
+                    "Organization (`{endpoint}`)\n  id:\n    {}\n  label:\n    {prim}",
+                    row.id
+                );
                 ListingPicker::append_credentials_footer(&mut text, credentials_note.as_ref());
                 self.status = Some(text);
                 self.status_err = false;
@@ -345,7 +357,12 @@ impl App {
         Ok(())
     }
 
-    fn draw_listing_picker_panel(&mut self, f: &mut ratatui::Frame<'_>, area: Rect, picker: &ListingPicker) {
+    fn draw_listing_picker_panel(
+        &mut self,
+        f: &mut ratatui::Frame<'_>,
+        area: Rect,
+        picker: &ListingPicker,
+    ) {
         self.sync_listing_picker_selection();
         let vw = usize::from(area.width.max(3).saturating_sub(4));
         let items: Vec<ListItem> = match picker {
@@ -517,7 +534,8 @@ impl App {
                 "CLI . Version ({}) . ({}) . {} ({})",
                 env!("CARGO_PKG_VERSION"),
                 option_env!("AUTHDOG_CLI_MONTH_YEAR").unwrap_or("unknown-month-year"),
-                option_env!("AUTHDOG_CLI_BUILD_GUID").unwrap_or("00000000-0000-4000-8000-000000000002"),
+                option_env!("AUTHDOG_CLI_BUILD_GUID")
+                    .unwrap_or("00000000-0000-4000-8000-000000000002"),
                 option_env!("AUTHDOG_CLI_GIT_SHA").unwrap_or("unknown-git-sha"),
             )
         }
@@ -1038,9 +1056,7 @@ impl App {
                 let lines = i32::from(wheel_scroll_lines(self.last_status_viewport_h));
                 let delta = dir.saturating_mul(lines);
                 if delta < 0 {
-                    self.status_scroll_row = self
-                        .status_scroll_row
-                        .saturating_sub((-delta) as u16);
+                    self.status_scroll_row = self.status_scroll_row.saturating_sub((-delta) as u16);
                 } else {
                     self.status_scroll_row = cmp::min(
                         self.status_scroll_row.saturating_add(delta as u16),
@@ -1204,8 +1220,7 @@ fn browse_project_line(p: &ProjectRow, vw: usize) -> Line<'static> {
             truncate_vis(
                 p.id.as_str(),
                 vw.saturating_sub(
-                    prim
-                        .width()
+                    prim.width()
                         .saturating_add(type_bit.width())
                         .saturating_add(8),
                 ),

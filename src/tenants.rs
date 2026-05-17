@@ -104,16 +104,10 @@ pub fn tenant_rows_from_body(body: &Value) -> Vec<TenantRow> {
             let name = tenant_name_hint(item);
             let organization_ids_raw = tenant_organization_ids_array(item);
             let scalar_org = tenant_org_id_hint(item);
-            let organization_ids = organization_ids_raw.or_else(|| {
-                scalar_org
-                    .as_ref()
-                    .map(|s| vec![s.clone()])
-            });
-            let organization_id = scalar_org.or_else(|| {
-                organization_ids
-                    .as_ref()
-                    .and_then(|v| v.first().cloned())
-            });
+            let organization_ids =
+                organization_ids_raw.or_else(|| scalar_org.as_ref().map(|s| vec![s.clone()]));
+            let organization_id =
+                scalar_org.or_else(|| organization_ids.as_ref().and_then(|v| v.first().cloned()));
             out.push(TenantRow {
                 id: id.to_string(),
                 name,
@@ -328,14 +322,8 @@ mod tests {
         let t2 = rows.iter().find(|r| r.id == "t2").unwrap();
         assert_eq!(t1.organization_id.as_deref(), Some("org-a"));
         assert_eq!(t2.organization_id.as_deref(), Some("org-b"));
-        assert_eq!(
-            t1.organization_ids.as_deref(),
-            Some(&["org-a".into()][..])
-        );
-        assert_eq!(
-            t2.organization_ids.as_deref(),
-            Some(&["org-b".into()][..])
-        );
+        assert_eq!(t1.organization_ids.as_deref(), Some(&["org-a".into()][..]));
+        assert_eq!(t2.organization_ids.as_deref(), Some(&["org-b".into()][..]));
 
         let (m, _) = filter_tenants_for_organization(&rows, "org-a");
         assert_eq!(m.len(), 1);
