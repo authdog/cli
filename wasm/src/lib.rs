@@ -11,7 +11,8 @@ fn err_js(e: impl std::fmt::Display) -> JsValue {
 /// Parse JWT payload (middle segment) to pretty JSON (**signature not verified**).
 #[wasm_bindgen(js_name = decodeJwtPayloadPretty)]
 pub fn decode_jwt_payload_pretty(access_token: &str) -> Result<String, JsValue> {
-    let claims = authdog_cli::whoami::decode_jwt_claims(access_token).map_err(|e| err_js(format!("{e:#}")))?;
+    let claims = authdog_cli::whoami::decode_jwt_claims(access_token)
+        .map_err(|e| err_js(format!("{e:#}")))?;
     serde_json::to_string_pretty(&claims).map_err(|e| err_js(e))
 }
 
