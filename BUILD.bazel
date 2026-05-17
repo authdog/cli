@@ -28,6 +28,7 @@ _BINARY_EXTRA_CRATES = [
     "crossterm",
     "figlet-rs",
     "ratatui",
+    "serde_json",
     "tui-input",
     "unicode-width",
     "uuid",
@@ -63,6 +64,7 @@ rust_binary(
     name = "authdog-cli",
     srcs = glob(["src/commands/**/*.rs"]) + [
         "src/app.rs",
+        "src/browse.rs",
         "src/main.rs",
         "src/tui_output.rs",
     ],
