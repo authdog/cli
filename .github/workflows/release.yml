@@ -127,7 +127,8 @@ jobs:
           echo "Packaging $(ls -la "${exe}")"
           if [[ "${Os}" == "Windows" ]]; then
             outfile="${BIN}-${ver}-${tgt}.zip"
-            (cd "$(dirname "${exe}")" && tar.exe -acf "${GITHUB_WORKSPACE}/dist/${outfile}" "$(basename "${exe}")")
+            # Relative archive path: GNU tar mis-reads D:\... as remote host "D".
+            tar.exe -acf "dist/${outfile}" -C "$(dirname "${exe}")" "$(basename "${exe}")"
           else
             outfile="${BIN}-${ver}-${tgt}.tar.gz"
             tar czf "dist/${outfile}" -C "$(dirname "${exe}")" "$(basename "${exe}")"
