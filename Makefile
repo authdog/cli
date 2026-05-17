@@ -16,7 +16,7 @@ release:
 release-tag:
 	@RELEASE_FETCH_TAGS="$(RELEASE_FETCH_TAGS)" python3 "$(MKROOT)/scripts/compute_release_tag.py"
 
-## Annotated git tag derived from `./Cargo.toml` (`[package].version`, `[package.metadata.authdog-release].stable`).
+## Annotated git tag derived from `./Cargo.toml` (`[package].version`, `[package.metadata.authdog-release].stable`; bare semver, no `v` prefix).
 tag:
 	@RELEASE_FETCH_TAGS="$(RELEASE_FETCH_TAGS)" "$(MKROOT)/scripts/create-local-release-tag.sh"
 

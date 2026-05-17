@@ -10,8 +10,8 @@ edition = "2021"
 build = "build.rs"
 
 # Release tagging (Makefile `tag` / GitHub Actions "Create release tag"):
-# - stable = false → tags are `v{version}-beta.{n}` (n increments across existing beta tags).
-# - stable = true → tag is exactly `v{version}`.
+# - stable = false → tags are `{version}-beta.{n}` (n increments across existing beta tags).
+# - stable = true → tag is exactly `{version}` (bare semver; no leading `v`).
 [package.metadata.authdog-release]
 stable = false
 

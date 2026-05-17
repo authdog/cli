@@ -37,21 +37,30 @@ def _fetch_tags(root: str) -> None:
 
 
 def _max_beta_suffix(root: str, base: str) -> int:
-    prefix = f"v{base}-beta."
-    proc = subprocess.run(
-        ["git", "-C", root, "tag", "-l", f"{prefix}*"],
-        text=True,
-        stdout=subprocess.PIPE,
-        check=True,
-    )
-    tags = [t for t in proc.stdout.splitlines() if t]
-    rx = re.compile(re.escape(prefix) + r"(\d+)$")
-    n = 0
-    for tag in tags:
-        m = rx.fullmatch(tag)
-        if m:
-            n = max(n, int(m.group(1)))
-    return n
+    """Largest `-beta.{n}` for this base across bare and legacy `v`-prefixed tags."""
+    legacy_prefix = f"v{base}-beta."
+    prefix = f"{base}-beta."
+
+    tags: list[str] = []
+    for pat in (f"{prefix}*", f"{legacy_prefix}*"):
+        proc = subprocess.run(
+            ["git", "-C", root, "tag", "-l", pat],
+            text=True,
+            stdout=subprocess.PIPE,
+            check=True,
+        )
+        tags.extend(t for t in proc.stdout.splitlines() if t)
+
+    def max_for(p: str) -> int:
+        rx = re.compile(re.escape(p) + r"(\d+)$")
+        n = 0
+        for tag in tags:
+            m = rx.fullmatch(tag)
+            if m:
+                n = max(n, int(m.group(1)))
+        return n
+
+    return max(max_for(prefix), max_for(legacy_prefix))
 
 
 def main() -> None:
@@ -82,12 +91,12 @@ def main() -> None:
     _fetch_tags(root)
 
     if stable:
-        tag = f"v{version}"
+        tag = version
         print(tag)
         return
 
     n = _max_beta_suffix(root, version) + 1
-    tag = f"v{version}-beta.{n}"
+    tag = f"{version}-beta.{n}"
     print(tag)
 
 

@@ -16,11 +16,15 @@ def main() -> None:
         or os.environ.get("GITHUB_REF_NAME")
         or ""
     ).strip()
-    if not raw.startswith("v"):
-        print(f"error: release tag must start with 'v' (got {raw!r})", file=sys.stderr)
+    if raw.startswith("v"):
+        print(
+            "error: release tag must not use a leading 'v' "
+            f"(got {raw!r}; expected bare semver)",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
-    body = raw.removeprefix("v")
+    body = raw
 
     cargo_path = os.path.join(os.path.dirname(__file__), "..", "Cargo.toml")
     cargo_path = os.path.normpath(cargo_path)
@@ -47,8 +51,8 @@ def main() -> None:
 
     print(
         "error: tag does not match Cargo.toml "
-        f"[package].version={version!r}: got derived payload {body!r} "
-        f"(expect v{version} or v{version}-beta.<n>)",
+        f"[package].version={version!r}: got {body!r} "
+        f"(expect {version} or {version}-beta.<n>)",
         file=sys.stderr,
     )
     sys.exit(1)

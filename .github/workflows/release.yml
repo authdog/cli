@@ -1,18 +1,19 @@
 name: Release
 
-# Multi-platform binaries + GitHub Release for version tags pushed to GitHub (e.g. `git push origin v0.1.0`).
-# Tag format follows `Makefile tag-push` / "Create release tag" workflow (`v{X.Y.Z}` or `v{X.Y.Z-beta.<n>`).
+# Multi-platform binaries + GitHub Release for version tags pushed to GitHub (e.g. `git push origin 0.1.0`).
+# Tag format follows `Makefile tag-push` / "Create release tag" workflow (`X.Y.Z` or `X.Y.Z-beta.<n>`; no leading `v`).
 # Manual re-run from the Actions tab for an existing tag: workflow_dispatch with the same tag name.
 
 on:
   push:
     tags:
-      # Semver-ish tags only (avoids accidental runs on unrelated tags).
-      - "v[0-9]*"
+      # Bare semver tags only (no leading `v`).
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+-*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build and publish (e.g. v0.1.0 or v0.1.0-beta.1)"
+        description: "Existing tag to build and publish (e.g. 0.1.0 or 0.1.0-beta.1)"
         required: true
         type: string
 

@@ -1,8 +1,8 @@
 name: Create release tag
 
 # Creates/pushes annotated tag from `./Cargo.toml`:
-# - `[package.metadata.authdog-release].stable=false` → `v{version}-beta.{n}` (n increments)
-# - `stable=true` → `v{version}`
+# - `[package.metadata.authdog-release].stable=false` → `{version}-beta.{n}` (n increments)
+# - `stable=true` → `{version}` (bare semver tag; no leading `v`)
 # Push to GitHub fires `.github/workflows/release.yml` automatically (unless Actions are disabled).
 
 permissions:
