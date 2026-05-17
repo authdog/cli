@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" href="https://api.authdog.com/favicon.ico" sizes="any" />
+    <!-- Rebuild the CLI (`cargo build` / reinstall) — this file is inlined with include_str!. -->
+    <title>Signed in — Authdog CLI</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --card: #ffffff;
+        --line: #e5e7eb;
+        --text: #111827;
+        --text-secondary: #4b5563;
+        --text-muted: #6b7280;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          Roboto,
+          "Helvetica Neue",
+          Arial,
+          sans-serif;
+        background: var(--bg);
+        color: var(--text-secondary);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem 1.25rem;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .shell {
+        width: min(28rem, 100%);
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 2rem 1.75rem 1.75rem;
+      }
+
+      .brand-logo {
+        margin: 0 auto 1.35rem;
+        width: fit-content;
+      }
+
+      .brand-logo img {
+        display: block;
+        height: 3rem;
+        width: 3rem;
+        object-fit: contain;
+      }
+
+      .brand-logo svg {
+        display: block;
+        height: 3rem;
+        width: auto;
+        max-width: min(100%, 12rem);
+      }
+
+      .kicker {
+        margin: 0 0 1.25rem;
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: var(--text-muted);
+        letter-spacing: 0.02em;
+      }
+
+      h1 {
+        margin: 0 0 0.75rem;
+        font-size: 1.25rem;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+        line-height: 1.35;
+        color: var(--text);
+      }
+
+      .lead {
+        margin: 0 0 1.25rem;
+        font-size: 0.875rem;
+        line-height: 1.55;
+        color: var(--text-secondary);
+      }
+
+      .step {
+        margin: 0;
+        padding: 0;
+        border: none;
+        font-size: 0.875rem;
+        line-height: 1.55;
+        color: var(--text-secondary);
+      }
+
+      .step strong {
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      hr {
+        border: none;
+        border-top: 1px solid var(--line);
+        margin: 1.25rem 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <article class="card">
+        <!-- Brand mark synced with apps/marketing public logo-color.svg (embedded for offline-safe callback). -->
+        <div class="brand-logo" role="img" aria-label="Authdog">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 930 821"
+            preserveAspectRatio="xMidYMid meet"
+            role="presentation"
+            aria-hidden="true"
+          >
+            <defs>
+              <linearGradient
+                id="authdog_logo_g1"
+                gradientUnits="userSpaceOnUse"
+                x1="465"
+                y1="774.2046"
+                x2="465"
+                y2="24.3741"
+              >
+                <stop offset="0.005618" stop-color="#3900AC" />
+                <stop offset="0.1652" stop-color="#2D14BC" />
+                <stop offset="0.534" stop-color="#153DDC" />
+                <stop offset="0.825" stop-color="#0657F1" />
+                <stop offset="1" stop-color="#0060F8" />
+              </linearGradient>
+              <linearGradient
+                id="authdog_logo_g2"
+                gradientUnits="userSpaceOnUse"
+                x1="385.5533"
+                y1="706.1738"
+                x2="385.5533"
+                y2="-165.0848"
+              >
+                <stop offset="0.005618" stop-color="#3900AC" />
+                <stop offset="0.1652" stop-color="#2D14BC" />
+                <stop offset="0.534" stop-color="#153DDC" />
+                <stop offset="0.825" stop-color="#0657F1" />
+                <stop offset="1" stop-color="#0060F8" />
+              </linearGradient>
+            </defs>
+            <path
+              fill="url(#authdog_logo_g1)"
+              d="M817.63,460.42c-45.57,158.84-166.35,217.89-210.82,234.64l-102.39-102.4l-208.26,32.19
+				c-31.71,4.89-63.45-6.41-84.91-30.26l-90.3-100.33c-5.07-5.64-7.11-13.13-5.61-20.56c1.51-7.43,6.32-13.53,13.18-16.75
+				l157.63-73.73l-0.45-20.58c-1.75-80.46,48.12-132.61,148.03-155.54v22.24c0,120.96,67.21,229.7,175.39,283.79l14.13,7.06
+				l14.13-7.06c108.18-54.09,175.39-162.83,175.39-283.79v-79.85L623.24,54.76l-167.7,83.85
+				c-143.97,22.38-225.71,94.49-232.6,204.45l-121.2,56.69c-25.18,11.78-42.79,34.16-48.32,61.41s1.97,54.72,20.56,75.38
+				l90.3,100.33c35.77,39.74,88.67,58.59,141.51,50.43l176.61-27.3l106.24,106.25l17.49-4.53c8.41-2.18,206.86-56.05,272.21-283.87
+				L817.63,460.42z M623.24,449.03C544.92,403.63,496.9,320.86,496.9,229.36v-40.81l126.34-63.17V449.03z"
+            />
+            <path
+              fill="url(#authdog_logo_g2)"
+              d="M359.35,363.02c0,14.47,11.73,26.2,26.2,26.2s26.2-11.73,26.2-26.2s-11.73-26.2-26.2-26.2
+				S359.35,348.55,359.35,363.02z"
+            />
+          </svg>
+        </div>
+        <p class="kicker">Authdog CLI</p>
+        <h1>You’re signed in</h1>
+        <hr />
+        <p class="step">
+          <strong>You can close this tab.</strong>
+          <br />
+          Return to the terminal where you ran the CLI to continue.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

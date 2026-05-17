@@ -1,0 +1,13 @@
+[package]
+name = "authdog-cli-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+authdog-cli = { path = "..", default-features = false }
+serde_json = "1.0"
+wasm-bindgen = "0.2.100"

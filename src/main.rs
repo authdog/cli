@@ -1,18 +1,26 @@
 //! Authdog CLI — full-screen Ratatui (Crossterm) interface.
 
+mod tui_output;
+
 use authdog_cli::cli_login;
 use authdog_cli::session_store;
+use authdog_cli::tenants;
+use authdog_cli::whoami;
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use figlet_rs::FIGlet;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::Stylize;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::DefaultTerminal;
 use std::cmp;
-use std::time::Duration;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 use unicode_width::UnicodeWidthStr;
@@ -33,7 +41,15 @@ const CMDS: &[SlashCmd] = &[
     },
     SlashCmd {
         name: "logout",
-        desc: "Sign out",
+        desc: "Delete saved credentials locally",
+    },
+    SlashCmd {
+        name: "whoami",
+        desc: "Identity from api.authdog.com (/v1/userinfo)",
+    },
+    SlashCmd {
+        name: "tenants",
+        desc: "Tenants from api.authdog.com (/v1/tenants)",
     },
     SlashCmd {
         name: "status",
@@ -56,6 +72,29 @@ const SEL_BG: Color = Color::Rgb(232, 220, 232);
 const SEL_FG: Color = Color::Rgb(35, 20, 40);
 const STATUS_OK: Color = Color::Rgb(212, 189, 230);
 const STATUS_ERR: Color = Color::Rgb(240, 188, 212);
+const STATUS_SUCCESS: Color = Color::Rgb(146, 220, 174);
+
+/// Bundled ANSI Shadow FIGlet font (`patorjk/figlet.js` via jsDelivr).
+const ANSI_SHADOW_FLF: &str = include_str!("../assets/fonts/ANSI Shadow.flf");
+/// Lowercase renders correctly for this alphabet; avoids tall small-caps glyphs.
+const BANNER_FIGLET: &str = "authdog";
+
+const HEADER_TAIL_LINES: u16 = 6;
+
+/// Hide the ✔ Signed in banner after this delay (header layout shrinks back).
+const LOGIN_SUCCESS_STATUS_TTL: Duration = Duration::from_secs(4);
+
+fn status_fingerprint(opt: Option<&str>) -> u64 {
+    let mut h = DefaultHasher::new();
+    match opt {
+        None => 0u8.hash(&mut h),
+        Some(t) => {
+            1u8.hash(&mut h);
+            t.hash(&mut h);
+        }
+    }
+    h.finish()
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SubmitEffect {
@@ -70,6 +109,14 @@ struct App {
     list_state: ListState,
     status: Option<String>,
     status_err: bool,
+    /// When set, clear `status` once `Instant::now()` passes (transient toasts).
+    status_clear_at: Option<Instant>,
+    /// Hash of [`App::status`] text; bumps reset vertical scroll position.
+    status_scroll_digest: u64,
+    /// Vertical scroll rows for [`Paragraph::scroll`] in the session output pane.
+    status_scroll_row: u16,
+    last_status_viewport_h: u16,
+    last_status_scroll_row_max: u16,
 }
 
 fn main() -> Result<()> {
@@ -80,8 +127,19 @@ fn main() -> Result<()> {
 }
 
 impl App {
+    fn tick_status_autoclose(&mut self) {
+        if let Some(deadline) = self.status_clear_at {
+            if Instant::now() >= deadline {
+                self.status = None;
+                self.status_err = false;
+                self.status_clear_at = None;
+            }
+        }
+    }
+
     fn run(mut self, term: &mut DefaultTerminal) -> Result<()> {
         while !self.quit {
+            self.tick_status_autoclose();
             term.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(250))? {
                 self.on_event(event::read()?, term)?;
@@ -110,10 +168,14 @@ impl App {
 
         let palette = slash_palette_indices(self.input.value());
 
+        let (banner_lines, banner_h) = figlet_banner_lines(outer.width);
+
+        let header_need = banner_h + HEADER_TAIL_LINES;
+
         let list_h = palette
             .as_ref()
             .filter(|v| !v.is_empty())
-            .map(|v| ((v.len() + 3) as u16).min(outer.height.saturating_sub(10)))
+            .map(|v| ((v.len() + 3) as u16).min(outer.height.saturating_sub(header_need + 4)))
             .unwrap_or(0);
 
         match &palette {
@@ -122,7 +184,7 @@ impl App {
         }
 
         let [header_chunk, list_chunk, spacer, input_chunk, foot_chunk] = Layout::vertical([
-            Constraint::Length(10),
+            Constraint::Length(header_need),
             Constraint::Length(list_h),
             Constraint::Fill(1),
             Constraint::Length(3),
@@ -130,25 +192,43 @@ impl App {
         ])
         .areas(outer);
 
-        self.draw_header(f, header_chunk);
+        self.draw_header(f, header_chunk, banner_lines);
         if let Some(ref idxs) = palette {
             if !idxs.is_empty() {
                 self.draw_menu(f, list_chunk, idxs);
             }
         }
 
-        f.render_widget(Paragraph::new("").style(Style::default().bg(BG)), spacer);
+        self.draw_session_output(f, spacer);
 
         self.draw_input_and_cursor(f, input_chunk);
 
-        let hint = Line::from(vec![
+        let mut hint = vec![
             "↑↓".dim(),
             " choose · Tab · ".into(),
             "Enter".bold(),
             " run · Esc".into(),
             " leave · Ctrl+C quit".dim(),
-        ]);
-        f.render_widget(Paragraph::new(hint).style(TXT_DIM).bg(BG), foot_chunk);
+        ];
+        if self.status.is_some() {
+            hint.push(Span::raw(" · "));
+            hint.push(Span::styled(
+                "PgUp/PgDn",
+                Style::default().fg(TXT).add_modifier(Modifier::BOLD),
+            ));
+            hint.push(Span::raw("/"));
+            hint.push(Span::styled(
+                "Home/End",
+                Style::default().fg(TXT).add_modifier(Modifier::BOLD),
+            ));
+            hint.push(Span::styled(" output", Style::default().fg(TXT_DIM)));
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(hint))
+                .style(Style::default().fg(TXT_DIM))
+                .bg(BG),
+            foot_chunk,
+        );
     }
 
     fn sync_list_selection(&mut self, len: usize) {
@@ -159,42 +239,28 @@ impl App {
         }
     }
 
-    fn draw_header(&self, f: &mut ratatui::Frame<'_>, area: Rect) {
-        let mut lines = vec![
-            Line::from(Span::styled(
-                "AUTHDOG",
-                Style::default()
-                    .fg(TXT)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            )),
-            Line::default(),
-            Line::from(vec![Span::styled(
-                "interactive CLI",
-                Style::default().fg(TXT_DIM).italic(),
-            )]),
-            Line::default(),
-            Line::from(Span::styled(
-                "─".repeat(area.width.max(16) as usize),
-                BORDER,
-            )),
-            Line::default(),
-            Line::from(vec![Span::styled(
-                "Type /help for slash commands · Enter runs · Esc clears or exits",
-                TXT_DIM,
-            )]),
-        ];
-
-        if let Some(ref s) = self.status {
-            lines.push(Line::default());
-            let style = Style::default().fg(if self.status_err {
-                STATUS_ERR
-            } else {
-                STATUS_OK
-            });
-            for l in s.lines() {
-                lines.push(Line::from(Span::styled(l, style)));
-            }
-        }
+    fn draw_header(
+        &self,
+        f: &mut ratatui::Frame<'_>,
+        area: Rect,
+        banner_lines: Vec<Line<'static>>,
+    ) {
+        let mut lines = banner_lines;
+        lines.push(Line::default());
+        lines.push(Line::from(vec![Span::styled(
+            "interactive CLI",
+            Style::default().fg(TXT_DIM).italic(),
+        )]));
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "─".repeat(area.width.max(16) as usize),
+            BORDER,
+        )));
+        lines.push(Line::default());
+        lines.push(Line::from(vec![Span::styled(
+            "Type /help for slash commands · Enter runs · Esc clears or exits",
+            TXT_DIM,
+        )]));
 
         f.render_widget(
             Paragraph::new(lines)
@@ -202,6 +268,76 @@ impl App {
                 .block(Block::default().style(Style::default().bg(BG))),
             area,
         );
+    }
+
+    fn draw_session_output(&mut self, f: &mut ratatui::Frame<'_>, area: Rect) {
+        if area.height < 3 || area.width < 14 {
+            f.render_widget(Paragraph::new("").style(Style::default().bg(BG)), area);
+            return;
+        }
+
+        let Some(raw) = self.status.as_deref() else {
+            f.render_widget(Paragraph::new("").style(Style::default().bg(BG)), area);
+            self.last_status_viewport_h = 0;
+            self.last_status_scroll_row_max = 0;
+            return;
+        };
+
+        let fp = status_fingerprint(Some(raw));
+        if fp != self.status_scroll_digest {
+            self.status_scroll_digest = fp;
+            self.status_scroll_row = 0;
+        }
+
+        let palette_out = tui_output::OutputPalette {
+            fg: TXT,
+            muted: TXT_DIM,
+            sep: BORDER,
+            accent: ACCENT,
+            success: STATUS_SUCCESS,
+            ok: STATUS_OK,
+            err: STATUS_ERR,
+        };
+
+        let lines: Vec<Line<'static>> = if self.status_err {
+            raw.lines()
+                .map(|l| Line::from(Span::styled(l.to_owned(), Style::default().fg(STATUS_ERR))))
+                .collect()
+        } else {
+            tui_output::styled_status_lines(raw, palette_out, false)
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(BORDER)
+            .title(Line::from(vec![
+                Span::styled("Session output", Style::default().fg(TXT).bold()),
+                Span::styled(" · PgUp/PgDn · Home/End", Style::default().fg(TXT_DIM)),
+            ]))
+            .style(Style::default().bg(SURFACE));
+
+        let inner_area = block.inner(area);
+        let inner_w = inner_area.width.max(1);
+        let vh_usize = usize::from(inner_area.height.max(1));
+
+        let total_rows = tui_output::wrapped_row_count(&lines, inner_w);
+        let vmax = total_rows.saturating_sub(vh_usize);
+        let vmax_u16 = u16::try_from(vmax).unwrap_or(u16::MAX);
+
+        self.status_scroll_row = self.status_scroll_row.min(vmax_u16);
+        self.last_status_viewport_h = inner_area.height.max(1);
+        self.last_status_scroll_row_max = vmax_u16;
+
+        let paragraph = Paragraph::new(lines)
+            .style(Style::default().bg(SURFACE))
+            .alignment(Alignment::Left)
+            .wrap(Wrap {
+                trim: false, // preserve leading spaces (JSON indentation)
+            })
+            .scroll((self.status_scroll_row, 0))
+            .block(block);
+
+        f.render_widget(paragraph, area);
     }
 
     fn draw_menu(&mut self, f: &mut ratatui::Frame<'_>, area: Rect, idxs: &[usize]) {
@@ -339,6 +475,47 @@ impl App {
                             }
                         }
                     }
+                    KeyCode::PageUp
+                        if self.status.is_some()
+                            && !palette.as_ref().is_some_and(|v| !v.is_empty()) =>
+                    {
+                        let step = if self.last_status_viewport_h > 0 {
+                            self.last_status_viewport_h
+                        } else {
+                            12
+                        };
+                        self.status_scroll_row = self.status_scroll_row.saturating_sub(step);
+                        return Ok(());
+                    }
+                    KeyCode::PageDown
+                        if self.status.is_some()
+                            && !palette.as_ref().is_some_and(|v| !v.is_empty()) =>
+                    {
+                        let step = if self.last_status_viewport_h > 0 {
+                            self.last_status_viewport_h
+                        } else {
+                            12
+                        };
+                        self.status_scroll_row = cmp::min(
+                            self.status_scroll_row.saturating_add(step),
+                            self.last_status_scroll_row_max,
+                        );
+                        return Ok(());
+                    }
+                    KeyCode::Home
+                        if self.status.is_some()
+                            && !palette.as_ref().is_some_and(|v| !v.is_empty()) =>
+                    {
+                        self.status_scroll_row = 0;
+                        return Ok(());
+                    }
+                    KeyCode::End
+                        if self.status.is_some()
+                            && !palette.as_ref().is_some_and(|v| !v.is_empty()) =>
+                    {
+                        self.status_scroll_row = self.last_status_scroll_row_max;
+                        return Ok(());
+                    }
                     _ => {}
                 }
 
@@ -366,15 +543,13 @@ impl App {
         }
         match result {
             Ok(()) => {
-                let path_msg = session_store::credentials_path()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "(could not resolve path)".into());
-                self.status = Some(format!(
-                    "Logged in.\nTokens saved to credentials file:\n{path_msg}",
-                ));
+                // Heavy check ✔ rendered green in [`tui_output::styled_status_lines`].
+                self.status = Some("\u{2714} Signed in".into());
                 self.status_err = false;
+                self.status_clear_at = Some(Instant::now() + LOGIN_SUCCESS_STATUS_TTL);
             }
             Err(err) => {
+                self.status_clear_at = None;
                 self.status = Some(format!("Login failed:\n{err:#}",));
                 self.status_err = true;
             }
@@ -385,10 +560,13 @@ impl App {
     fn apply_submit(&mut self, line: &str) -> SubmitEffect {
         let line = line.trim();
         if line.is_empty() {
+            self.status_clear_at = None;
             self.status = None;
             self.status_err = false;
             return SubmitEffect::None;
         }
+
+        self.status_clear_at = None;
 
         let first = line
             .split_whitespace()
@@ -423,7 +601,58 @@ impl App {
             }
             "logout" => match session_store::clear_session() {
                 Ok(()) => {
-                    self.status = Some("Logged out locally (deleted credentials.json).".into());
+                    self.status =
+                        Some("Signed out locally (credentials file removed).\nRun /login to sign in again.".into());
+                    self.status_err = false;
+                    SubmitEffect::None
+                }
+                Err(err) => {
+                    self.status = Some(format!("{err:#}"));
+                    self.status_err = true;
+                    SubmitEffect::None
+                }
+            },
+            "whoami" | "me" => match session_store::load_session() {
+                Ok(Some(s)) => {
+                    self.status = Some(whoami::compose_whoami_report(
+                        &s.access_token,
+                        session_store::credentials_path()
+                            .ok()
+                            .map(|path| format!("credentials file: {}", path.display())),
+                    ));
+                    self.status_err = false;
+                    SubmitEffect::None
+                }
+                Ok(None) => {
+                    self.status = Some(
+                        "Not logged in (/whoami).\nTry /login, or use /status to confirm files."
+                            .into(),
+                    );
+                    self.status_err = false;
+                    SubmitEffect::None
+                }
+                Err(err) => {
+                    self.status = Some(format!("{err:#}"));
+                    self.status_err = true;
+                    SubmitEffect::None
+                }
+            },
+            "tenants" => match session_store::load_session() {
+                Ok(Some(s)) => {
+                    self.status = Some(tenants::compose_tenants_report(
+                        &s.access_token,
+                        session_store::credentials_path()
+                            .ok()
+                            .map(|path| format!("credentials file: {}", path.display())),
+                    ));
+                    self.status_err = false;
+                    SubmitEffect::None
+                }
+                Ok(None) => {
+                    self.status = Some(
+                        "Not logged in (/tenants).\nTry /login, or use /status to confirm files."
+                            .into(),
+                    );
                     self.status_err = false;
                     SubmitEffect::None
                 }
@@ -501,6 +730,58 @@ fn slash_palette_indices(value: &str) -> Option<Vec<usize>> {
         }
     }
     Some(out)
+}
+
+fn ansi_shadow_figlet() -> Option<&'static FIGlet> {
+    static FONT: OnceLock<Option<FIGlet>> = OnceLock::new();
+    FONT.get_or_init(|| FIGlet::from_content(ANSI_SHADOW_FLF).ok())
+        .as_ref()
+}
+
+/// FIGlet banner sized to the viewport, or the previous single-line fallback.
+fn figlet_banner_lines(term_width_cols: u16) -> (Vec<Line<'static>>, u16) {
+    let w = term_width_cols as usize;
+
+    let fallback_single = vec![Line::from(Span::styled(
+        BANNER_FIGLET,
+        Style::default()
+            .fg(TXT)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    ))];
+
+    let Some(font) = ansi_shadow_figlet() else {
+        return (fallback_single.clone(), 1);
+    };
+
+    let Some(fig) = font.convert(BANNER_FIGLET) else {
+        return (fallback_single.clone(), 1);
+    };
+
+    let raw_lines: Vec<String> = fig
+        .as_str()
+        .lines()
+        .map(str::trim_end)
+        .filter(|ln| !ln.is_empty())
+        .map(str::to_owned)
+        .collect();
+
+    if raw_lines.is_empty() {
+        return (fallback_single.clone(), 1);
+    }
+
+    let max_art_w = raw_lines.iter().map(|ln| ln.width()).max().unwrap_or(0);
+
+    if max_art_w > w {
+        return (fallback_single.clone(), 1);
+    }
+
+    let styled_lines: Vec<Line<'static>> = raw_lines
+        .into_iter()
+        .map(|t| Line::from(Span::styled(t, Style::default().fg(ACCENT).bold())))
+        .collect();
+
+    let h = cmp::max(1, styled_lines.len().min(usize::from(u16::MAX))) as u16;
+    (styled_lines, h)
 }
 
 fn truncate_vis(s: &str, max_cols: usize) -> String {
