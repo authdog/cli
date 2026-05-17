@@ -293,7 +293,9 @@ fn sort_object_keys(m: &Map<String, Value>) -> Vec<String> {
 }
 
 fn prioritized_columns(keys: &[String]) -> Vec<String> {
-    const FRONT: &[&str] = &["id", "type", "primary", "verified", "kind", "value", "address"];
+    const FRONT: &[&str] = &[
+        "id", "type", "primary", "verified", "kind", "value", "address",
+    ];
     const BACK: &[&str] = &["updatedAt", "createdAt"];
 
     let mut front: Vec<String> = Vec::new();
@@ -318,7 +320,11 @@ fn prioritized_columns(keys: &[String]) -> Vec<String> {
     front
 }
 
-fn column_width_for_objects(rows: &[&Map<String, Value>], cols: &[String], max_w: usize) -> Vec<usize> {
+fn column_width_for_objects(
+    rows: &[&Map<String, Value>],
+    cols: &[String],
+    max_w: usize,
+) -> Vec<usize> {
     let mut widths: Vec<usize> = Vec::new();
     for c in cols {
         let header = c.len();
@@ -364,7 +370,9 @@ fn array_of_objects_as_table(rows: &[&Map<String, Value>]) -> String {
         header_cells.join("  "),
         idx_w = idx_w
     ));
-    let rule_len = idx_w + 2 + header_cells.iter().map(|s| s.len()).sum::<usize>()
+    let rule_len = idx_w
+        + 2
+        + header_cells.iter().map(|s| s.len()).sum::<usize>()
         + 2usize.saturating_mul(header_cells.len().saturating_sub(1));
     lines.push(format!("      {}", "-".repeat(rule_len.min(120))));
 
@@ -396,7 +404,11 @@ fn summarize_non_object_array(arr: &[Value]) -> String {
     }
 }
 
-fn render_nested_object_section(label: &str, inner: &Map<String, Value>, indent_spaces: usize) -> String {
+fn render_nested_object_section(
+    label: &str,
+    inner: &Map<String, Value>,
+    indent_spaces: usize,
+) -> String {
     let pad = " ".repeat(indent_spaces);
     let title = human_section_title(label);
     let underline = "-".repeat((title.len() + 8).clamp(16, 64));
@@ -424,7 +436,11 @@ fn render_object_readable(obj: &Map<String, Value>, indent_spaces: usize) -> Str
                 let rows: Vec<_> = a.iter().filter_map(|row| row.as_object()).collect();
                 if rows.len() == a.len() {
                     let title = human_section_title(k.as_str());
-                    let note = format!("{pad}{title}  ({} {})", rows.len(), if rows.len() == 1 { "entry" } else { "entries" });
+                    let note = format!(
+                        "{pad}{title}  ({} {})",
+                        rows.len(),
+                        if rows.len() == 1 { "entry" } else { "entries" }
+                    );
                     let tbl = array_of_objects_as_table(rows.as_slice());
                     blocks.push(format!("{note}\n{tbl}"));
                 } else {
@@ -468,10 +484,7 @@ fn format_section_block(section_key: &str, v: &Value) -> String {
             format!("{title}\n{underline}\n{body}")
         }
         _ => {
-            format!(
-                "{title}\n{underline}\n  {}",
-                leaf_to_display(v)
-            )
+            format!("{title}\n{underline}\n  {}", leaf_to_display(v))
         }
     }
 }

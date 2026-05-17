@@ -166,9 +166,7 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                         if rows.is_empty() {
                             if let Some(msg) = scope_note {
                                 app.clear_listing_picker();
-                                app.status = Some(format!(
-                                    "── Tenants ({endpoint}) ──\n{msg}"
-                                ));
+                                app.status = Some(format!("── Tenants ({endpoint}) ──\n{msg}"));
                                 app.status_err = true;
                             } else {
                                 app.listing_picker = Some(ListingPicker::Tenants {

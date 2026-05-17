@@ -314,10 +314,7 @@ pub fn fetch_tenants(access_token: &str, scoped_organization_id: Option<&str>) -
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        Some(oid) => base_req.query(&[
-            ("organization_id", oid),
-            ("organizationId", oid),
-        ]),
+        Some(oid) => base_req.query(&[("organization_id", oid), ("organizationId", oid)]),
         None => base_req,
     };
     let resp = req.send().with_context(|| format!("GET {url}"))?;

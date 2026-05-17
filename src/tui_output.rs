@@ -110,12 +110,7 @@ pub fn styled_status_lines(
                 if line_tail_looks_like_json_fragment(trimmed) {
                     out.push(highlight_json_line(line, palette));
                 } else {
-                    out.push(claims_or_neutral_body_line(
-                        line,
-                        trimmed,
-                        palette,
-                        fg_base,
-                    ));
+                    out.push(claims_or_neutral_body_line(line, trimmed, palette, fg_base));
                 }
             }
             DocBlock::AccessTokenClaims => {
