@@ -19,8 +19,20 @@ pub struct OutputPalette {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DocBlock {
     Neutral,
-    IdentityJson,
+    /// Pretty-printed JSON body after a `── … (…) ──` REST section banner.
+    ApiJsonBody,
     AccessTokenClaims,
+}
+
+/// Section titles immediately followed by JSON (`/v1/userinfo`, `/v1/tenants`, etc.).
+const JSON_SECTION_LINE_PREFIXES: &[&str] =
+    &["── Identity (", "── Tenants (", "── Organizations ("];
+
+fn line_opens_api_json_section(line: &str) -> bool {
+    let t = line.trim_start();
+    JSON_SECTION_LINE_PREFIXES
+        .iter()
+        .any(|prefix| t.starts_with(prefix))
 }
 
 /// Estimate wrapped row count when using [`ratatui::widgets::Paragraph`] +
@@ -51,14 +63,12 @@ pub fn styled_status_lines(
     let mut out: Vec<Line<'static>> = Vec::new();
 
     for line in text.lines() {
-        let sep_identity = line.trim_start().starts_with("── Identity (");
-        let sep_tenants = line.trim_start().starts_with("── Tenants (");
         let sep_access = line
             .trim_start()
             .starts_with("── Access token payload (decoded locally · signature NOT verified");
 
-        if sep_identity || sep_tenants {
-            block = DocBlock::IdentityJson;
+        if line_opens_api_json_section(line) {
+            block = DocBlock::ApiJsonBody;
             out.push(Line::from(vec![Span::styled(
                 line.to_string(),
                 Style::default().fg(palette.sep).italic(),
@@ -83,14 +93,14 @@ pub fn styled_status_lines(
             continue;
         }
 
-        if block == DocBlock::IdentityJson && line.trim().is_empty() {
+        if block == DocBlock::ApiJsonBody && line.trim().is_empty() {
             block = DocBlock::Neutral;
             out.push(Line::default());
             continue;
         }
 
         match block {
-            DocBlock::IdentityJson => out.push(highlight_json_line(line, palette)),
+            DocBlock::ApiJsonBody => out.push(highlight_json_line(line, palette)),
             DocBlock::AccessTokenClaims => {
                 let tail_t = line.trim_start();
 
@@ -382,6 +392,23 @@ mod tests {
                 .spans
                 .iter()
                 .any(|sp| sp.content.contains("\"total\"")),
+            "{lines:?}",
+        );
+    }
+
+    #[test]
+    fn organizations_separator_switches_highlighting() {
+        let s = concat!(
+            "── Organizations (https://example/v1/organizations) ──\n",
+            "{\"organizations\":[{\"name\":\"Acme\"}]}\n",
+        );
+        let lines = styled_status_lines(s, pal(), false);
+        assert!(lines.len() >= 2);
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .any(|sp| sp.content.contains("\"name\"")),
             "{lines:?}",
         );
     }

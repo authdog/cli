@@ -5,8 +5,8 @@ pub mod whoami;
 #[cfg(feature = "desktop")]
 pub mod cli_login;
 #[cfg(feature = "desktop")]
+pub mod organizations;
+#[cfg(feature = "desktop")]
 pub mod session_store;
 #[cfg(feature = "desktop")]
 pub mod tenants;
-#[cfg(feature = "desktop")]
-pub mod organizations;

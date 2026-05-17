@@ -317,10 +317,12 @@ pub fn resume_tui_io() -> Result<()> {
     use crossterm::cursor::Hide;
     use crossterm::execute;
     use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
-    use std::io::{stdout, Write};
-    execute!(stdout(), EnterAlternateScreen, Hide).context("enter alt screen")?;
+    use std::io::{stderr, stdout, Write};
+    // Match `ratatui::try_init()` order so raw mode + alternate screen match startup.
     enable_raw_mode().context("enable_raw_mode")?;
-    stdout().flush()?;
+    execute!(stdout(), EnterAlternateScreen, Hide).context("enter alt screen")?;
+    stdout().flush().context("flush stdout after resume")?;
+    stderr().flush().context("flush stderr after resume")?;
     Ok(())
 }
 

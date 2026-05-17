@@ -3,12 +3,12 @@
 mod tui_output;
 
 use authdog_cli::cli_login;
-use authdog_cli::session_store;
 use authdog_cli::organizations;
+use authdog_cli::session_store;
 use authdog_cli::tenants;
 use authdog_cli::whoami;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use figlet_rs::FIGlet;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
@@ -536,7 +536,6 @@ impl App {
         term: &mut DefaultTerminal,
         effect: SubmitEffect,
     ) -> Result<()> {
-        let _ = term;
         if effect != SubmitEffect::BrowserLogin {
             return Ok(());
         }
@@ -545,6 +544,10 @@ impl App {
         let result = cli_login::run_browser_login_blocking(&cfg);
         if let Err(err) = cli_login::resume_tui_io() {
             eprintln!("warning: failed to resume TUI (terminal mode): {err:#}");
+        } else {
+            // Leaving alternate screen desyncs Ratatui's diff buffer from the terminal; force a
+            // full redraw so incremental updates do not leave stray rows (e.g. footer hints).
+            term.clear().context("clear terminal after OAuth resume")?;
         }
         match result {
             Ok(()) => {

@@ -115,7 +115,8 @@ mod tests {
 
     #[test]
     fn error_preview_extracts_rest_detail_json() {
-        let body = r#"{"error":"Failed to fetch organizations","detail":"upstream: graphql rejected"}"#;
+        let body =
+            r#"{"error":"Failed to fetch organizations","detail":"upstream: graphql rejected"}"#;
         let s = organizations_error_body_preview(reqwest::StatusCode::FORBIDDEN, body);
         assert!(s.contains("403"), "expected status in preview: {s}");
         assert!(s.contains("Failed to fetch organizations"), "{s}");
