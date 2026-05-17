@@ -128,7 +128,7 @@ fn neutral_success_line_maybe_check(
         let after_glyph = &line[HEAVY_CHECK.len_utf8()..];
         let after_trim = after_glyph.trim_start();
         let spacer = after_glyph.len().saturating_sub(after_trim.len());
-        let space_str: String = std::iter::repeat(' ').take(spacer.min(16)).collect();
+        let space_str: String = " ".repeat(spacer.min(16));
         return Line::from(vec![
             Span::styled(
                 format!("{HEAVY_CHECK}{space_str}"),
@@ -311,7 +311,7 @@ fn try_json_keyword(chars: &[char], i: usize) -> Option<(String, usize)> {
     for kw in KWS {
         if tail.starts_with(kw) {
             let end = i + kw.chars().count();
-            if chars.get(end).map_or(true, boundary_after_json_lit) {
+            if chars.get(end).is_none_or(boundary_after_json_lit) {
                 return Some((kw.to_string(), kw.chars().count()));
             }
         }

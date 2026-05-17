@@ -477,7 +477,7 @@ impl App {
                     }
                     KeyCode::PageUp
                         if self.status.is_some()
-                            && !palette.as_ref().is_some_and(|v| !v.is_empty()) =>
+                            && palette.as_ref().is_none_or(|v| v.is_empty()) =>
                     {
                         let step = if self.last_status_viewport_h > 0 {
                             self.last_status_viewport_h
@@ -489,7 +489,7 @@ impl App {
                     }
                     KeyCode::PageDown
                         if self.status.is_some()
-                            && !palette.as_ref().is_some_and(|v| !v.is_empty()) =>
+                            && palette.as_ref().is_none_or(|v| v.is_empty()) =>
                     {
                         let step = if self.last_status_viewport_h > 0 {
                             self.last_status_viewport_h
@@ -504,14 +504,14 @@ impl App {
                     }
                     KeyCode::Home
                         if self.status.is_some()
-                            && !palette.as_ref().is_some_and(|v| !v.is_empty()) =>
+                            && palette.as_ref().is_none_or(|v| v.is_empty()) =>
                     {
                         self.status_scroll_row = 0;
                         return Ok(());
                     }
                     KeyCode::End
                         if self.status.is_some()
-                            && !palette.as_ref().is_some_and(|v| !v.is_empty()) =>
+                            && palette.as_ref().is_none_or(|v| v.is_empty()) =>
                     {
                         self.status_scroll_row = self.last_status_scroll_row_max;
                         return Ok(());

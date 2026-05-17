@@ -6,7 +6,6 @@ use chrono::{DateTime, SecondsFormat, Utc};
 #[cfg(feature = "desktop")]
 use reqwest::blocking::Client;
 use serde_json::{Map, Value};
-use std::cmp;
 #[cfg(feature = "desktop")]
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -98,7 +97,7 @@ pub fn fetch_identity_userinfo(access_token: &str) -> Result<Value> {
 fn claim_kv_width(pref: &[&str], others: &[String]) -> usize {
     let w1 = pref.iter().copied().map(|k| k.len() + 1).max().unwrap_or(0);
     let w2 = others.iter().map(|k| k.len() + 1).max().unwrap_or(0);
-    cmp::min(34, cmp::max(11, cmp::max(w1, w2)))
+    w1.max(w2).clamp(11, 34)
 }
 
 fn padded_claim_line(width: usize, key: &str, value_display: &str) -> String {
