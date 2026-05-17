@@ -569,7 +569,11 @@ mod tests {
         let lines = styled_status_lines(s, pal(), false);
         let row = lines
             .iter()
-            .find(|l| l.spans.iter().any(|sp| sp.content.contains("remainingSeconds")))
+            .find(|l| {
+                l.spans
+                    .iter()
+                    .any(|sp| sp.content.contains("remainingSeconds"))
+            })
             .expect("session kv line after blank separator");
         assert!(
             row.spans.len() >= 2,
