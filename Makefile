@@ -1,4 +1,8 @@
-.PHONY: all build release run clean check fmt clippy test wasm tenants projects bazel-build bazel-test
+.PHONY: all build release release-tag tag tag-push run clean check fmt clippy test wasm tenants projects bazel-build bazel-test
+
+MKROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+# When tagging locally, refresh remote tags before computing the next `-beta.{n}` (set to 0 to stay offline-only).
+RELEASE_FETCH_TAGS ?= 1
 
 all: build
 
@@ -7,6 +11,17 @@ build:
 
 release:
 	cargo build --release
+
+## Print the next release tag Cargo + git tags would compute (respects RELEASE_FETCH_TAGS).
+release-tag:
+	@RELEASE_FETCH_TAGS="$(RELEASE_FETCH_TAGS)" python3 "$(MKROOT)/scripts/compute_release_tag.py"
+
+## Annotated git tag derived from `./Cargo.toml` (`[package].version`, `[package.metadata.authdog-release].stable`).
+tag:
+	@RELEASE_FETCH_TAGS="$(RELEASE_FETCH_TAGS)" "$(MKROOT)/scripts/create-local-release-tag.sh"
+
+tag-push:
+	@RELEASE_FETCH_TAGS="$(RELEASE_FETCH_TAGS)" "$(MKROOT)/scripts/push-local-release-tag.sh"
 
 # Usage: make run ARGS='--whatever'
 ARGS ?=

@@ -1,0 +1,147 @@
+name: Release
+
+# Ship multi-platform binaries for tag pushes (recommended: semver tags like v0.1.0 or v0.1.0-beta.1).
+
+on:
+  push:
+    tags:
+      # Semver-ish tags only (avoids accidental runs on unrelated tags).
+      - "v[0-9]*"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  BIN_NAME: authdog-cli
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  packages:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: glibc (x86_64, aarch64, i686), 32-bit ARM (armv7), static musl (x86_64, aarch64).
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            build_tool: cargo
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            build_tool: cross
+          - os: ubuntu-22.04
+            target: i686-unknown-linux-gnu
+            build_tool: cross
+          - os: ubuntu-22.04
+            target: armv7-unknown-linux-gnueabihf
+            build_tool: cross
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            build_tool: cross
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
+            build_tool: cross
+          # macOS: Intel and Apple Silicon (separate archives).
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            build_tool: cargo
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            build_tool: cargo
+          # Windows: MSVC x64.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            build_tool: cargo
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.build_tool == 'cross'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build (cross)
+        if: matrix.build_tool == 'cross'
+        run: cross build --locked --release -p authdog-cli --target ${{ matrix.target }}
+
+      - name: Build (cargo)
+        if: matrix.build_tool == 'cargo'
+        run: cargo build --locked --release -p authdog-cli --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          declare -r BIN="${BIN_NAME}"
+          declare -r ver="${VERSION}"
+          declare -r tgt="${TARGET}"
+          Os="${RUNNER_OS}"
+          exe="target/${tgt}/release/${BIN}"
+          if [[ "${Os}" == "Windows" ]]; then exe="${exe}.exe"; fi
+          echo "Packaging $(ls -la "${exe}")"
+          if [[ "${Os}" == "Windows" ]]; then
+            outfile="${BIN}-${ver}-${tgt}.zip"
+            (cd "$(dirname "${exe}")" && tar.exe -acf "../../dist/${outfile}" "$(basename "${exe}")")
+          else
+            outfile="${BIN}-${ver}-${tgt}.tar.gz"
+            tar czf "dist/${outfile}" -C "$(dirname "${exe}")" "$(basename "${exe}")"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.target }}
+          path: dist/*
+
+  github-release:
+    name: Publish GitHub Release
+    needs: packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: dist
+
+      - name: checksums.sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          shopt -s nullglob
+          files=( *.tar.gz *.zip )
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "No release archives found"; ls -la; exit 1
+          fi
+          sha256sum "${files[@]}" > checksums.sha256
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          prerelease: >-
+            ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') ||
+            contains(github.ref_name, 'rc') }}

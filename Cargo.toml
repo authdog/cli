@@ -9,6 +9,12 @@ version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 
+# Release tagging (Makefile `tag` / GitHub Actions "Create release tag"):
+# - stable = false → tags are `v{version}-beta.{n}` (n increments across existing beta tags).
+# - stable = true → tag is exactly `v{version}`.
+[package.metadata.authdog-release]
+stable = false
+
 [build-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid = { version = "1", features = ["v4"] }
@@ -58,3 +64,6 @@ uuid = { version = "1", features = ["v4"], optional = true }
 name = "authdog-cli"
 path = "src/main.rs"
 required-features = ["desktop"]
+
+[profile.release]
+strip = "symbols"
