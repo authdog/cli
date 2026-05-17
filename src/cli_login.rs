@@ -370,14 +370,16 @@ pub fn run_browser_login_blocking(cfg: &CliAuthConfig) -> Result<()> {
                         access_token,
                         refresh_token,
                     }) => {
-                        let prev_tenant = crate::session_store::load_session()
-                            .ok()
-                            .flatten()
-                            .and_then(|s| s.current_tenant_id);
+                        let prev = crate::session_store::load_session().ok().flatten();
                         save_session(&StoredSession {
                             access_token,
                             refresh_token,
-                            current_tenant_id: prev_tenant,
+                            current_organization_id: prev
+                                .as_ref()
+                                .and_then(|s| s.current_organization_id.clone()),
+                            current_tenant_id: prev
+                                .as_ref()
+                                .and_then(|s| s.current_tenant_id.clone()),
                             current_application_id: None,
                             current_environment_id: None,
                         })?;

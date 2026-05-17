@@ -32,7 +32,7 @@ pub const CMDS: &[SlashCmd] = &[
     },
     SlashCmd {
         name: "projects",
-        desc: "Projects for current tenant (/v1/tenants/{id}/projects)",
+        desc: "Interactive projects list (↑↓ Enter) · /v1/tenants/{tenant}/projects",
     },
     SlashCmd {
         name: "browse",
@@ -40,11 +40,11 @@ pub const CMDS: &[SlashCmd] = &[
     },
     SlashCmd {
         name: "organizations",
-        desc: "Interactive org list (↑↓ Enter) · /v1/organizations (/orgs)",
+        desc: "Pick org (↑↓ Enter) · persists org (clears stale tenant/project/env) · /orgs",
     },
     SlashCmd {
         name: "status",
-        desc: "Show session status",
+        desc: "Session · tokens preview · organization · tenant · project · env",
     },
     SlashCmd {
         name: "quit",

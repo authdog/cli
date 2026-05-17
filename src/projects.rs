@@ -47,6 +47,13 @@ fn projects_error_body_preview(status: reqwest::StatusCode, body: &str) -> Strin
     append_cf_1003_ops_hint(base)
 }
 
+/// Full URL displayed for **`GET /v1/tenants/{tenant_id}/projects`** (`/projects` picker title and legacy reports).
+pub fn projects_endpoint_display(tenant_id: &str) -> String {
+    let origin = crate::whoami::api_origin();
+    let base_shown = origin.trim_end_matches('/');
+    format!("{base_shown}/v1/tenants/{tenant_id}/projects")
+}
+
 /// `GET …/v1/tenants/{tenant_id}/projects` with the access token.
 pub fn fetch_projects(access_token: &str, tenant_id: &str) -> Result<Value> {
     let origin = crate::whoami::api_origin();
@@ -77,9 +84,7 @@ pub fn compose_projects_report(
     tenant_id: &str,
     credentials_file_note: Option<String>,
 ) -> String {
-    let origin = crate::whoami::api_origin();
-    let base_shown = origin.trim_end_matches('/');
-    let projects_note = format!("{base_shown}/v1/tenants/{tenant_id}/projects");
+    let projects_note = projects_endpoint_display(tenant_id);
 
     let body = match fetch_projects(access_token, tenant_id) {
         Ok(ref v) => {

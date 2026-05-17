@@ -1,6 +1,6 @@
 //! Slash-command dispatch into [`crate::app::App`] session output.
 
-use crate::app::{App, ListingPicker};
+use crate::app::{App, ListingPicker, WhoamiJsonTab, WhoamiOutputPane};
 use crate::commands::registry::CMDS;
 
 use authdog_cli::cli_login;
@@ -11,6 +11,13 @@ use authdog_cli::tenants;
 use authdog_cli::whoami;
 use std::cmp;
 use uuid::Uuid;
+
+fn tenants_organization_scope(s: &session_store::StoredSession) -> Option<&str> {
+    s.current_organization_id.as_deref().and_then(|id| {
+        let t = id.trim();
+        (!t.is_empty()).then_some(t)
+    })
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum SubmitEffect {
@@ -42,9 +49,13 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
 
     if !matches!(
         first.as_str(),
-        "tenants" | "organizations" | "orgs" | "browse" | "navigator"
+        "tenants" | "organizations" | "orgs" | "browse" | "navigator" | "projects"
     ) {
         app.clear_listing_picker();
+    }
+
+    if first.as_str() != "whoami" && first.as_str() != "me" {
+        app.whoami_output = None;
     }
 
     match first.as_str() {
@@ -74,12 +85,14 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
         "logout" => {
             match session_store::clear_session() {
                 Ok(()) => {
+                    app.whoami_output = None;
                     app.status =
                     Some("Signed out locally (credentials file removed).\nRun /login to sign in again.".into());
                     app.status_err = false;
                     SubmitEffect::None
                 }
                 Err(err) => {
+                    app.whoami_output = None;
                     app.status = Some(format!("{err:#}"));
                     app.status_err = true;
                     SubmitEffect::None
@@ -88,16 +101,42 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
         }
         "whoami" | "me" => match session_store::load_session() {
             Ok(Some(s)) => {
-                app.status = Some(whoami::compose_whoami_report(
-                    &s.access_token,
-                    session_store::credentials_path()
-                        .ok()
-                        .map(|path| format!("credentials file: {}", path.display())),
-                ));
-                app.status_err = false;
+                let cred_note = session_store::credentials_path()
+                    .ok()
+                    .map(|path| format!("credentials file: {}", path.display()));
+                match whoami::fetch_identity_userinfo(&s.access_token) {
+                    Ok(value) => {
+                        let (pretty, raw) = whoami::format_identity_json_pair(&value);
+                        app.status = None;
+                        app.status_err = false;
+                        app.whoami_output = Some(WhoamiOutputPane {
+                            endpoint_note: whoami::userinfo_endpoint_display(),
+                            pretty_json: pretty,
+                            raw_json: raw,
+                            credentials_note: cred_note,
+                            tab: WhoamiJsonTab::Pretty,
+                        });
+                    }
+                    Err(err) => {
+                        app.whoami_output = None;
+                        let userinfo_note = whoami::userinfo_endpoint_display();
+                        let mut msg =
+                            format!("── Identity ({userinfo_note}) ──\n  (could not load) {err:#}");
+                        if let Some(note) = cred_note {
+                            let t = note.trim();
+                            if !t.is_empty() {
+                                msg.push_str("\n\n");
+                                msg.push_str(t);
+                            }
+                        }
+                        app.status = Some(msg);
+                        app.status_err = false;
+                    }
+                }
                 SubmitEffect::None
             }
             Ok(None) => {
+                app.whoami_output = None;
                 app.status = Some(
                     "Not logged in (/whoami).\nTry /login, or use /status to confirm files.".into(),
                 );
@@ -105,6 +144,7 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                 SubmitEffect::None
             }
             Err(err) => {
+                app.whoami_output = None;
                 app.status = Some(format!("{err:#}"));
                 app.status_err = true;
                 SubmitEffect::None
@@ -117,8 +157,9 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                     .ok()
                     .map(|path| format!("credentials file: {}", path.display()));
                 let base = whoami::api_origin().trim_end_matches('/').to_string();
-                let endpoint = format!("{base}{}", tenants::TENANTS_PATH);
-                match tenants::fetch_tenants(&s.access_token) {
+                let scoped_org = tenants_organization_scope(&s);
+                let endpoint = tenants::tenants_list_url_for_display(&base, scoped_org);
+                match tenants::fetch_tenants(&s.access_token, scoped_org) {
                     Ok(json) => {
                         let rows = tenants::tenant_rows_from_body(&json);
                         app.listing_picker = Some(ListingPicker::Tenants {
@@ -155,6 +196,7 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
         },
         "tenant" => match session_store::load_session() {
             Ok(Some(s)) => {
+                let scoped_org = tenants_organization_scope(&s);
                 let tokens: Vec<&str> = line.split_whitespace().collect();
                 match tokens.len() {
                     1 => {
@@ -188,7 +230,7 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                             } else {
                                 let mut allowed = true;
                                 let mut warning = String::new();
-                                match tenants::fetch_tenants(&s.access_token) {
+                                match tenants::fetch_tenants(&s.access_token, scoped_org) {
                                     Ok(v) => {
                                         let ids = tenants::tenant_ids_from_body(&v);
                                         if !ids.iter().any(|x| x.as_str() == tid) {
@@ -249,6 +291,7 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
         },
         "projects" => match session_store::load_session() {
             Ok(Some(s)) => {
+                app.browse = None;
                 match &s.current_tenant_id {
                     None => {
                         app.status = Some(
@@ -258,14 +301,29 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                         app.status_err = false;
                     }
                     Some(tid) => {
-                        app.status = Some(projects::compose_projects_report(
-                            &s.access_token,
-                            tid.as_str(),
-                            session_store::credentials_path()
-                                .ok()
-                                .map(|path| format!("credentials file: {}", path.display())),
-                        ));
-                        app.status_err = false;
+                        let cred_note = session_store::credentials_path()
+                            .ok()
+                            .map(|path| format!("credentials file: {}", path.display()));
+                        let endpoint = projects::projects_endpoint_display(tid.as_str());
+                        match projects::fetch_projects(&s.access_token, tid.as_str()) {
+                            Ok(json) => {
+                                let rows = projects::project_rows_from_body(&json);
+                                app.listing_picker = Some(ListingPicker::Projects {
+                                    rows,
+                                    endpoint,
+                                    credentials_note: cred_note,
+                                });
+                                app.listing_list_state.select(Some(0));
+                                app.status = None;
+                                app.status_err = false;
+                            }
+                            Err(err) => {
+                                app.status = Some(format!(
+                                    "── Projects ({endpoint}) ──\n  (could not load) {err:#}"
+                                ));
+                                app.status_err = true;
+                            }
+                        }
                     }
                 }
                 SubmitEffect::None
@@ -361,6 +419,12 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                 let path_show = session_store::credentials_path()
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|_| "(unknown)".into());
+                let org_line = s
+                    .current_organization_id
+                    .as_deref()
+                    .filter(|t| !t.is_empty())
+                    .map(|id| format!("\nCurrent organization: {id}"))
+                    .unwrap_or_else(|| "\nCurrent organization: (none)".into());
                 let tenant_line = s
                     .current_tenant_id
                     .as_deref()
@@ -380,7 +444,7 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                     .map(|id| format!("\nCurrent environment: {id}"))
                     .unwrap_or_else(|| "\nCurrent environment: (none)".into());
                 app.status = Some(format!(
-                    "Session file: {path_show}\nAccess token preview: {preview}… ({} chars)\nRefresh token: {} chars{tenant_line}{app_line}{env_line}",
+                    "Session file: {path_show}\nAccess token preview: {preview}… ({} chars)\nRefresh token: {} chars{org_line}{tenant_line}{app_line}{env_line}",
                     s.access_token.len(),
                     s.refresh_token.len(),
                 ));

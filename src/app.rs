@@ -53,7 +53,7 @@ const INPUT_PREFIX: &str = "→ ";
 /// Hide the ✔ Signed in banner after this delay (header layout shrinks back).
 const LOGIN_SUCCESS_STATUS_TTL: Duration = Duration::from_secs(4);
 
-/// Keyboard-driven list launched by **`/tenants`** / **`/organizations`** (instead of JSON).
+/// Keyboard-driven list for **`/tenants`**, **`/organizations`**, or **`/projects`** (instead of raw JSON dumps).
 #[derive(Clone)]
 pub(crate) enum ListingPicker {
     Tenants {
@@ -66,29 +66,70 @@ pub(crate) enum ListingPicker {
         endpoint: String,
         credentials_note: Option<String>,
     },
+    Projects {
+        rows: Vec<ProjectRow>,
+        endpoint: String,
+        credentials_note: Option<String>,
+    },
 }
 
 impl ListingPicker {
+    fn trimmed_credentials_note(note: Option<&String>) -> Option<&str> {
+        note.and_then(|n| {
+            let t = n.trim();
+            (!t.is_empty()).then_some(t)
+        })
+    }
+
+    fn pick_one_title_tail(endpoint: &str, row_count: usize, note: Option<&String>) -> String {
+        let mut s = format!(" ({endpoint}) · {row_count} rows · pick one");
+        if let Some(t) = Self::trimmed_credentials_note(note) {
+            s.push_str(" · ");
+            s.push_str(&truncate_vis(t, 44));
+        }
+        s
+    }
+
     fn row_count(&self) -> usize {
         match self {
             ListingPicker::Tenants { rows, .. } => rows.len(),
             ListingPicker::Organizations { rows, .. } => rows.len(),
+            ListingPicker::Projects { rows, .. } => rows.len(),
         }
     }
 
     fn block_title(&self) -> Line<'_> {
         match self {
-            ListingPicker::Tenants { endpoint, rows, .. } => Line::from(vec![
+            ListingPicker::Tenants {
+                endpoint,
+                rows,
+                credentials_note,
+            } => Line::from(vec![
                 Span::styled("Tenants", Style::default().fg(TXT).bold()),
                 Span::styled(
-                    format!(" ({endpoint}) · {} rows · pick one", rows.len()),
+                    Self::pick_one_title_tail(endpoint, rows.len(), credentials_note.as_ref()),
                     TXT_DIM,
                 ),
             ]),
-            ListingPicker::Organizations { endpoint, rows, .. } => Line::from(vec![
+            ListingPicker::Organizations {
+                endpoint,
+                rows,
+                credentials_note,
+            } => Line::from(vec![
                 Span::styled("Organizations", Style::default().fg(TXT).bold()),
                 Span::styled(
-                    format!(" ({endpoint}) · {} rows · pick one", rows.len()),
+                    Self::pick_one_title_tail(endpoint, rows.len(), credentials_note.as_ref()),
+                    TXT_DIM,
+                ),
+            ]),
+            ListingPicker::Projects {
+                endpoint,
+                rows,
+                credentials_note,
+            } => Line::from(vec![
+                Span::styled("Projects", Style::default().fg(TXT).bold()),
+                Span::styled(
+                    Self::pick_one_title_tail(endpoint, rows.len(), credentials_note.as_ref()),
                     TXT_DIM,
                 ),
             ]),
@@ -96,13 +137,68 @@ impl ListingPicker {
     }
 
     fn append_credentials_footer(text: &mut String, note: Option<&String>) {
-        if let Some(n) = note {
-            let t = n.trim();
+        if let Some(t) = Self::trimmed_credentials_note(note) {
+            text.push_str("\n\n");
+            text.push_str(t);
+        }
+    }
+}
+
+/// Pretty vs compact JSON for **`/whoami`** (Tab switches).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum WhoamiJsonTab {
+    #[default]
+    Pretty,
+    Raw,
+}
+
+#[derive(Clone)]
+pub(crate) struct WhoamiOutputPane {
+    pub(crate) endpoint_note: String,
+    pub(crate) pretty_json: String,
+    pub(crate) raw_json: String,
+    pub(crate) credentials_note: Option<String>,
+    pub(crate) tab: WhoamiJsonTab,
+}
+
+impl WhoamiOutputPane {
+    pub(crate) fn composed_for_styling(&self) -> String {
+        let json = match self.tab {
+            WhoamiJsonTab::Pretty => self.pretty_json.as_str(),
+            WhoamiJsonTab::Raw => self.raw_json.as_str(),
+        };
+        let mut s = format!("── Identity ({}) ──\n{json}", self.endpoint_note);
+        if let Some(ref note) = self.credentials_note {
+            let t = note.trim();
             if !t.is_empty() {
-                text.push_str("\n\n");
-                text.push_str(t);
+                s.push_str("\n\n");
+                s.push_str(note);
             }
         }
+        s
+    }
+
+    pub(crate) fn tab_line(&self) -> Line<'static> {
+        let pretty_hot = self.tab == WhoamiJsonTab::Pretty;
+        Line::from(vec![
+            Span::styled(
+                " Pretty ",
+                if pretty_hot {
+                    Style::default().fg(SEL_FG).bg(ACCENT).bold()
+                } else {
+                    Style::default().fg(TXT_DIM).italic()
+                },
+            ),
+            Span::styled(" · ", BORDER),
+            Span::styled(
+                " Raw ",
+                if !pretty_hot {
+                    Style::default().fg(SEL_FG).bg(ACCENT).bold()
+                } else {
+                    Style::default().fg(TXT_DIM).italic()
+                },
+            ),
+        ])
     }
 }
 
@@ -130,7 +226,7 @@ pub struct App {
     pub(crate) status_err: bool,
     /// When set, clear `status` once `Instant::now()` passes (transient toasts).
     pub(crate) status_clear_at: Option<Instant>,
-    /// Hash of [`App::status`] text; bumps reset vertical scroll position.
+    /// Hash used to detect session-output text changes; bumps reset vertical scroll position.
     pub(crate) status_scroll_digest: u64,
     /// Vertical scroll rows for [`Paragraph::scroll`] in the session output pane.
     pub(crate) status_scroll_row: u16,
@@ -138,9 +234,11 @@ pub struct App {
     pub(crate) last_status_scroll_row_max: u16,
     /// Last-drawn rectangle for `/projects`-style session output (`None` until drawn).
     pub(crate) session_output_rect: Option<Rect>,
-    /// `/tenants` or `/organizations` interactive table (exclusive with [`Self::browse`]).
+    /// `/tenants`, `/organizations`, or **`/projects`** interactive table (exclusive with [`Self::browse`]).
     pub(crate) listing_picker: Option<ListingPicker>,
     pub(crate) listing_list_state: ListState,
+    /// **`/whoami`** JSON pane (exclusive with meaningful [`Self::status`] content for layout).
+    pub(crate) whoami_output: Option<WhoamiOutputPane>,
 }
 
 impl App {
@@ -159,10 +257,6 @@ impl App {
         self.listing_list_state.select(None);
     }
 
-    fn listing_exclusive(&self, palette: &Option<Vec<usize>>) -> bool {
-        self.listing_picker.is_some() && palette.as_ref().map_or(true, |cmds| cmds.is_empty())
-    }
-
     fn sync_listing_picker_selection(&mut self) {
         let len = self
             .listing_picker
@@ -176,7 +270,7 @@ impl App {
         }
     }
     fn browse_exclusive(&self, palette: &Option<Vec<usize>>) -> bool {
-        self.browse.is_some() && palette.as_ref().map_or(true, |cmds| cmds.is_empty())
+        self.browse.is_some() && palette.as_ref().is_none_or(|cmds| cmds.is_empty())
     }
 
     fn browse_list_len(&self) -> usize {
@@ -345,13 +439,67 @@ impl App {
                     return Ok(());
                 };
                 let prim = row.display_primary();
-                let mut text = format!(
-                    "Organization (`{endpoint}`)\n  id:\n    {}\n  label:\n    {prim}",
-                    row.id
-                );
-                ListingPicker::append_credentials_footer(&mut text, credentials_note.as_ref());
-                self.status = Some(text);
-                self.status_err = false;
+                match session_store::set_current_organization_id(Some(row.id.clone())) {
+                    Ok(()) => {
+                        let mut ok = format!("Current organization set to `{}`\n{}", row.id, prim);
+                        ListingPicker::append_credentials_footer(
+                            &mut ok,
+                            credentials_note.as_ref(),
+                        );
+                        self.status = Some(ok);
+                        self.status_err = false;
+                    }
+                    Err(e) => {
+                        let mut err = format!("Could not save organization:\n{e:#}");
+                        ListingPicker::append_credentials_footer(
+                            &mut err,
+                            credentials_note.as_ref(),
+                        );
+                        self.status = Some(err);
+                        self.status_err = true;
+                    }
+                }
+            }
+            ListingPicker::Projects {
+                rows,
+                endpoint,
+                credentials_note,
+            } => {
+                if rows.is_empty() {
+                    let mut msg = format!("Projects ({endpoint})\n(No rows.)");
+                    ListingPicker::append_credentials_footer(&mut msg, credentials_note.as_ref());
+                    self.status = Some(msg);
+                    self.status_err = false;
+                    return Ok(());
+                }
+                let Some(row) = rows.get(sel) else {
+                    self.status = Some(format!(
+                        "Projects ({endpoint})\n(Invalid selection; run /projects.)"
+                    ));
+                    self.status_err = true;
+                    return Ok(());
+                };
+                let primary = row.display_primary();
+                match session_store::set_current_application_id(Some(row.id.clone())) {
+                    Ok(()) => {
+                        let mut ok = format!("Current project set to `{}`\n{}", row.id, primary);
+                        ListingPicker::append_credentials_footer(
+                            &mut ok,
+                            credentials_note.as_ref(),
+                        );
+                        self.status = Some(ok);
+                        self.status_err = false;
+                    }
+                    Err(e) => {
+                        let mut err = format!("Could not save project:\n{e:#}");
+                        ListingPicker::append_credentials_footer(
+                            &mut err,
+                            credentials_note.as_ref(),
+                        );
+                        self.status = Some(err);
+                        self.status_err = true;
+                    }
+                }
             }
         }
         Ok(())
@@ -373,6 +521,10 @@ impl App {
             ListingPicker::Organizations { rows, .. } => rows
                 .iter()
                 .map(|o| ListItem::new(browse_org_line(o, vw)))
+                .collect(),
+            ListingPicker::Projects { rows, .. } => rows
+                .iter()
+                .map(|p| ListItem::new(browse_project_line(p, vw)))
                 .collect(),
         };
 
@@ -489,7 +641,7 @@ impl App {
                 " run · Esc".into(),
                 " leave · Ctrl+C quit".dim(),
             ];
-            if self.status.is_some() {
+            if self.status.is_some() || self.whoami_output.is_some() {
                 hint.push(Span::raw(" · "));
                 hint.push(Span::styled(
                     "PgUp/PgDn",
@@ -503,6 +655,16 @@ impl App {
                 hint.push(Span::styled(" · ", Style::default().fg(TXT_DIM)));
                 hint.push(Span::styled("Wheel", Style::default().fg(TXT).bold()));
                 hint.push(Span::styled(" output", Style::default().fg(TXT_DIM)));
+                if self.whoami_output.is_some() {
+                    hint.push(Span::styled(
+                        " · Pretty/Raw: ",
+                        Style::default().fg(TXT_DIM),
+                    ));
+                    hint.push(Span::styled(
+                        "Tab",
+                        Style::default().fg(TXT).add_modifier(Modifier::BOLD),
+                    ));
+                }
             }
             Line::from(hint)
         };
@@ -589,6 +751,11 @@ impl App {
             return;
         }
 
+        if let Some(pane) = self.whoami_output.clone() {
+            self.draw_whoami_panel(f, area, &pane);
+            return;
+        }
+
         let Some(raw) = self.status.as_deref() else {
             f.render_widget(Paragraph::new("").style(Style::default().bg(BG)), area);
             self.last_status_viewport_h = 0;
@@ -652,6 +819,69 @@ impl App {
             .wrap(Wrap {
                 trim: false, // preserve leading spaces (JSON indentation)
             })
+            .scroll((self.status_scroll_row, 0))
+            .block(block);
+
+        f.render_widget(paragraph, area);
+    }
+
+    fn draw_whoami_panel(
+        &mut self,
+        f: &mut ratatui::Frame<'_>,
+        area: Rect,
+        pane: &WhoamiOutputPane,
+    ) {
+        let composed = pane.composed_for_styling();
+        let fp = status_fingerprint(Some(composed.as_str()));
+        if fp != self.status_scroll_digest {
+            self.status_scroll_digest = fp;
+            self.status_scroll_row = 0;
+        }
+
+        let palette_out = tui_output::OutputPalette {
+            fg: TXT,
+            muted: TXT_DIM,
+            sep: BORDER,
+            accent: ACCENT,
+            success: STATUS_SUCCESS,
+            ok: STATUS_OK,
+            err: STATUS_ERR,
+        };
+
+        let mut lines = tui_output::styled_status_lines(&composed, palette_out, false);
+        lines.insert(0, pane.tab_line());
+        lines.insert(1, Line::default());
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(BORDER)
+            .title(Line::from(vec![
+                Span::styled("Session output", Style::default().fg(TXT).bold()),
+                Span::styled(
+                    " · Pretty/Raw Tab · PgUp/PgDn · Wheel · Home/End",
+                    Style::default().fg(TXT_DIM),
+                ),
+            ]))
+            .style(Style::default().bg(SURFACE));
+
+        let inner_area = block.inner(area);
+        let inner_w = inner_area.width.max(1);
+        let vh_usize = usize::from(inner_area.height.max(1));
+
+        let total_rows = tui_output::wrapped_row_count(&lines, inner_w);
+        let vmax = total_rows.saturating_sub(vh_usize);
+        let vmax_u16 = u16::try_from(vmax).unwrap_or(u16::MAX);
+
+        self.status_scroll_row = self.status_scroll_row.min(vmax_u16);
+        self.last_status_viewport_h = inner_area.height.max(1);
+        self.last_status_scroll_row_max = vmax_u16;
+
+        self.session_output_rect = Some(area);
+
+        let paragraph = Paragraph::new(lines)
+            .style(Style::default().bg(SURFACE))
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false })
             .scroll((self.status_scroll_row, 0))
             .block(block);
 
@@ -853,7 +1083,8 @@ impl App {
                 }
                 let palette = slash_palette_indices(self.input.value());
                 let browse_exclusive = self.browse_exclusive(&palette);
-                let listing_exclusive = self.listing_exclusive(&palette);
+                let listing_exclusive = self.listing_picker.is_some()
+                    && palette.as_ref().is_none_or(|cmds| cmds.is_empty());
                 match ke.code {
                     KeyCode::Char('c') if ke.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.quit = true;
@@ -959,6 +1190,19 @@ impl App {
                         self.list_state.select_previous();
                     }
                     KeyCode::Tab => {
+                        if self.browse.is_none()
+                            && self.listing_picker.is_none()
+                            && palette.as_ref().is_none_or(|v| v.is_empty())
+                            && self.whoami_output.is_some()
+                        {
+                            if let Some(ref mut pane) = self.whoami_output {
+                                pane.tab = match pane.tab {
+                                    WhoamiJsonTab::Pretty => WhoamiJsonTab::Raw,
+                                    WhoamiJsonTab::Raw => WhoamiJsonTab::Pretty,
+                                };
+                                return Ok(());
+                            }
+                        }
                         if let Some(ref idxs) = palette {
                             if idxs.len() > 1 {
                                 let sel = self.list_state.selected().unwrap_or(0);
@@ -969,6 +1213,19 @@ impl App {
                         }
                     }
                     KeyCode::BackTab => {
+                        if self.browse.is_none()
+                            && self.listing_picker.is_none()
+                            && palette.as_ref().is_none_or(|v| v.is_empty())
+                            && self.whoami_output.is_some()
+                        {
+                            if let Some(ref mut pane) = self.whoami_output {
+                                pane.tab = match pane.tab {
+                                    WhoamiJsonTab::Pretty => WhoamiJsonTab::Raw,
+                                    WhoamiJsonTab::Raw => WhoamiJsonTab::Pretty,
+                                };
+                                return Ok(());
+                            }
+                        }
                         if let Some(ref idxs) = palette {
                             if !idxs.is_empty() {
                                 let sel = self.list_state.selected().unwrap_or(0);
@@ -979,7 +1236,7 @@ impl App {
                         }
                     }
                     KeyCode::PageUp
-                        if self.status.is_some()
+                        if (self.status.is_some() || self.whoami_output.is_some())
                             && palette.as_ref().is_none_or(|v| v.is_empty())
                             && self.browse.is_none()
                             && self.listing_picker.is_none() =>
@@ -993,7 +1250,7 @@ impl App {
                         return Ok(());
                     }
                     KeyCode::PageDown
-                        if self.status.is_some()
+                        if (self.status.is_some() || self.whoami_output.is_some())
                             && palette.as_ref().is_none_or(|v| v.is_empty())
                             && self.browse.is_none()
                             && self.listing_picker.is_none() =>
@@ -1010,7 +1267,7 @@ impl App {
                         return Ok(());
                     }
                     KeyCode::Home
-                        if self.status.is_some()
+                        if (self.status.is_some() || self.whoami_output.is_some())
                             && palette.as_ref().is_none_or(|v| v.is_empty())
                             && self.browse.is_none()
                             && self.listing_picker.is_none() =>
@@ -1019,7 +1276,7 @@ impl App {
                         return Ok(());
                     }
                     KeyCode::End
-                        if self.status.is_some()
+                        if (self.status.is_some() || self.whoami_output.is_some())
                             && palette.as_ref().is_none_or(|v| v.is_empty())
                             && self.browse.is_none()
                             && self.listing_picker.is_none() =>
@@ -1039,7 +1296,9 @@ impl App {
                     return Ok(());
                 }
                 let palette = slash_palette_indices(self.input.value());
-                if self.status.is_none() || palette.as_ref().is_some_and(|v| !v.is_empty()) {
+                if (self.status.is_none() && self.whoami_output.is_none())
+                    || palette.as_ref().is_some_and(|v| !v.is_empty())
+                {
                     return Ok(());
                 }
                 let Some(rect) = self.session_output_rect else {

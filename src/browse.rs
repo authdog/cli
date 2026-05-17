@@ -18,6 +18,7 @@ pub enum BrowsePopOutcome {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::enum_variant_names)] // intentional Pick* wizard steps
 pub enum BrowseStep {
     PickOrganization,
     PickTenant {
@@ -95,7 +96,8 @@ impl BrowseSession {
         let org_value = organizations::fetch_organizations(&access_token)?;
         let org_rows = organizations::organization_rows_from_body(&org_value);
         let step = if org_rows.is_empty() {
-            let ten_value = tenants::fetch_tenants(&access_token)
+            session_store::set_current_organization_id(None)?;
+            let ten_value = tenants::fetch_tenants(&access_token, None)
                 .context("GET /v1/tenants (no organizations)")?;
             let tenant_rows = tenants::tenant_rows_from_body(&ten_value);
             BrowseStep::PickTenant {
@@ -125,17 +127,26 @@ impl BrowseSession {
             .context("organization index")?;
         let headline = org_heading(row);
         let org_id = row.id.clone();
+        session_store::set_current_organization_id(Some(org_id.clone()))?;
 
-        let ten_value = tenants::fetch_tenants(&self.access_token).context("GET /v1/tenants")?;
+        let ten_value = tenants::fetch_tenants(&self.access_token, Some(org_id.as_str()))
+            .context("GET /v1/tenants")?;
         let all = tenants::tenant_rows_from_body(&ten_value);
 
-        let (filtered, advisory) = tenants::filter_tenants_for_organization(&all, org_id.as_str());
+        let (filtered, advisory) =
+            tenants::filter_tenants_for_organization_for_browse(&all, org_id.as_str());
+        if filtered.is_empty() {
+            anyhow::bail!(
+                "{}",
+                advisory.unwrap_or_else(|| "No tenants for this organization.".into())
+            );
+        }
 
         self.step = BrowseStep::PickTenant {
             org_summary: headline,
             tenants: filtered,
         };
-        Ok(advisory)
+        Ok(None)
     }
 
     /// Confirm tenant → list projects for that tenant.

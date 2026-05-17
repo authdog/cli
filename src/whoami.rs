@@ -251,17 +251,29 @@ pub fn describe_access_token(access_token: &str) -> Result<String> {
     Ok(render_whoami_from_claims(&decode_jwt_claims(access_token)?))
 }
 
+/// Human-readable **`GET …/v1/userinfo`** URL as shown in the CLI (origin + path).
+#[cfg(feature = "desktop")]
+pub fn userinfo_endpoint_display() -> String {
+    format!("{}{}", api_origin().trim_end_matches('/'), USERINFO_PATH)
+}
+
+/// Pretty (indented) and compact JSON for an identity **`Value`** (**`/whoami`** Pretty vs Raw tabs).
+#[cfg(feature = "desktop")]
+pub fn format_identity_json_pair(v: &Value) -> (String, String) {
+    let pretty = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+    let compact = serde_json::to_string(v).unwrap_or_else(|_| "{}".into());
+    (pretty, compact)
+}
+
 /// Full **`/whoami`** text: **`GET /v1/userinfo`** JSON (+ optional **`credentials file:`** note).
 #[cfg(feature = "desktop")]
 pub fn compose_whoami_report(access_token: &str, credentials_file_note: Option<String>) -> String {
-    let origin = api_origin();
-    let base_shown = origin.trim_end_matches('/');
-    let userinfo_note = format!("{base_shown}{USERINFO_PATH}");
+    let userinfo_note = userinfo_endpoint_display();
 
     let identity_section = match fetch_identity_userinfo(access_token) {
         Ok(ref v) => {
-            let json = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
-            format!("── Identity ({userinfo_note}) ──\n{json}")
+            let (pretty, _) = format_identity_json_pair(v);
+            format!("── Identity ({userinfo_note}) ──\n{pretty}")
         }
         Err(err) => {
             format!("── Identity ({userinfo_note}) ──\n  (could not load) {err:#}")

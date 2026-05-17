@@ -4,8 +4,23 @@ use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::time::Duration;
+use url::Url;
 
 pub const TENANTS_PATH: &str = "/v1/tenants";
+
+/// Full **`GET …/v1/tenants`** URL for CLI copy (optional **`organization_id`** query when scoped).
+pub fn tenants_list_url_for_display(api_origin: &str, organization_scope: Option<&str>) -> String {
+    let base = api_origin.trim_end_matches('/');
+    let path = format!("{base}{TENANTS_PATH}");
+    let Some(oid) = organization_scope.map(str::trim).filter(|s| !s.is_empty()) else {
+        return path;
+    };
+    let Ok(mut u) = Url::parse(&path) else {
+        return format!("{path}?organization_id={oid}");
+    };
+    u.query_pairs_mut().append_pair("organization_id", oid);
+    u.to_string()
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TenantRow {
@@ -130,42 +145,93 @@ fn tenant_lists_organization(t: &TenantRow, org_id: &str) -> bool {
     t.organization_id.as_deref() == Some(org_id)
 }
 
-fn response_declares_organization_metadata(all: &[TenantRow]) -> bool {
-    all.iter()
-        .any(|t| t.organization_id.is_some() || t.organization_ids.is_some())
+/// At least one row carries a **non-empty** org link (**`organizationIds`** or scalar **`organizationId`**, …).
+///
+/// Rows with **`organizationIds: []`** alone do **not** count — the API uses that for grant-only merges
+/// (see **`tenants/list handler`** merging **`userOrganizations`** + **`tenantsWithAccess`**).
+fn aggregation_includes_organization_membership_hints(all: &[TenantRow]) -> bool {
+    all.iter().any(|t| {
+        if let Some(s) = t.organization_id.as_deref() {
+            if !s.is_empty() {
+                return true;
+            }
+        }
+        t.organization_ids
+            .as_ref()
+            .is_some_and(|v| v.iter().any(|id| !id.is_empty()))
+    })
 }
 
-/// Narrow **`GET /v1/tenants`** rows when the REST payload includes organization membership metadata (**`organizationIds`** or legacy scalar org fields).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TenantOrgFilterMode {
+    /// When org linkage is missing from the merged payload, keep returning **every** tenant (older gateways / unknown shapes).
+    PermissiveLegacy,
+    /// `/browse` after picking an organization: never show the full merged list as if it belonged to that org when no row has usable **`organizationIds`** data.
+    BrowseOrganizationScoped,
+}
+
+fn filter_tenants_for_organization_inner(
+    all: &[TenantRow],
+    org_id: &str,
+    mode: TenantOrgFilterMode,
+) -> (Vec<TenantRow>, Option<String>) {
+    if org_id.is_empty() || all.is_empty() {
+        return (all.to_vec(), None);
+    }
+
+    if !aggregation_includes_organization_membership_hints(all) {
+        return match mode {
+            TenantOrgFilterMode::PermissiveLegacy => (all.to_vec(), None),
+            TenantOrgFilterMode::BrowseOrganizationScoped => (
+                vec![],
+                Some(
+                    "Cannot list tenants for this organization: `GET …/tenants` has no non-empty `organizationIds` (or scalar org id) on any row. \
+The org + tenant merge likely failed for `userOrganizations` upstream while `tenantsWithAccess` still returned rows. \
+Try again, or check the API / Management GraphQL."
+                        .to_string(),
+                ),
+            ),
+        };
+    }
+
+    let matched: Vec<TenantRow> = all
+        .iter()
+        .filter(|t| tenant_lists_organization(t, org_id))
+        .cloned()
+        .collect();
+
+    if matched.is_empty() && !all.is_empty() {
+        return (
+            matched,
+            Some(format!(
+                "REST tenants response includes organization membership, but none of these tenants belong to `{org_id}`. Press Esc and try another organization."
+            )),
+        );
+    }
+
+    (matched, None)
+}
+
+/// Narrow **`GET /v1/tenants`** rows when the REST payload includes usable organization membership metadata.
 ///
 /// Legacy servers that omit linkage keep the previous behaviour: return **all** tenants (some org pickers cannot be narrowed client-side alone).
 pub fn filter_tenants_for_organization(
     all: &[TenantRow],
     org_id: &str,
 ) -> (Vec<TenantRow>, Option<String>) {
-    if org_id.is_empty() || all.is_empty() {
-        return (all.to_vec(), None);
-    }
+    filter_tenants_for_organization_inner(all, org_id, TenantOrgFilterMode::PermissiveLegacy)
+}
 
-    if response_declares_organization_metadata(all) {
-        let matched: Vec<TenantRow> = all
-            .iter()
-            .filter(|t| tenant_lists_organization(t, org_id))
-            .cloned()
-            .collect();
-
-        return if matched.is_empty() && !all.is_empty() {
-            (
-                matched,
-                Some(format!(
-                    "REST tenants response includes organization membership, but none of these tenants belong to `{org_id}`. Press Esc and try another organization."
-                )),
-            )
-        } else {
-            (matched, None)
-        };
-    }
-
-    (all.to_vec(), None)
+/// Like [`filter_tenants_for_organization`], but for **`/browse`** after the user picks an organization — avoids showing **every** merged tenant when org linkage is missing from the payload.
+pub fn filter_tenants_for_organization_for_browse(
+    all: &[TenantRow],
+    org_id: &str,
+) -> (Vec<TenantRow>, Option<String>) {
+    filter_tenants_for_organization_inner(
+        all,
+        org_id,
+        TenantOrgFilterMode::BrowseOrganizationScoped,
+    )
 }
 
 fn summarize_body_preview(body: &str, max: usize) -> String {
@@ -211,7 +277,10 @@ fn tenants_error_body_preview(status: reqwest::StatusCode, body: &str) -> String
 }
 
 /// `GET …/v1/tenants` with the access token.
-pub fn fetch_tenants(access_token: &str) -> Result<Value> {
+///
+/// When **`scoped_organization_id`** is **`Some`**, sends **`organization_id`** so the API only
+/// returns tenants whose **`organizationIds`** include that organization.
+pub fn fetch_tenants(access_token: &str, scoped_organization_id: Option<&str>) -> Result<Value> {
     let origin = crate::whoami::api_origin();
     let base = origin.trim_end_matches('/');
     let url = format!("{base}{TENANTS_PATH}");
@@ -220,12 +289,18 @@ pub fn fetch_tenants(access_token: &str) -> Result<Value> {
         .user_agent(concat!("authdog-cli/", env!("CARGO_PKG_VERSION")))
         .build()
         .context("build HTTP client for tenants")?;
-    let resp = client
+    let base_req = client
         .get(&url)
         .header(reqwest::header::ACCEPT, "application/json")
-        .bearer_auth(access_token)
-        .send()
-        .with_context(|| format!("GET {url}"))?;
+        .bearer_auth(access_token);
+    let req = match scoped_organization_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(oid) => base_req.query(&[("organization_id", oid)]),
+        None => base_req,
+    };
+    let resp = req.send().with_context(|| format!("GET {url}"))?;
     let status = resp.status();
     let body = resp.text().context("read tenants response body")?;
     if !status.is_success() {
@@ -266,7 +341,7 @@ pub fn compose_tenants_report(access_token: &str, credentials_file_note: Option<
     let base_shown = origin.trim_end_matches('/');
     let tenants_note = format!("{base_shown}{TENANTS_PATH}");
 
-    let body = match fetch_tenants(access_token) {
+    let body = match fetch_tenants(access_token, None) {
         Ok(ref v) => {
             let json = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
             format!("── Tenants ({tenants_note}) ──\n{json}")
@@ -384,6 +459,24 @@ mod tests {
         let (picked, _) = filter_tenants_for_organization(&rows, "org-demo");
         assert_eq!(picked.len(), 1);
         assert_eq!(picked[0].id, "linked");
+    }
+
+    #[test]
+    fn browse_strict_empty_when_every_row_only_has_empty_organization_ids() {
+        let v: Value = serde_json::from_str(
+            r#"{"tenants":[
+               {"id":"a","organizationIds":[]},
+               {"id":"b","organizationIds":[]}
+            ]}"#,
+        )
+        .unwrap();
+        let rows = tenant_rows_from_body(&v);
+        let (narrow, hint) = filter_tenants_for_organization_for_browse(&rows, "org-x");
+        assert!(narrow.is_empty());
+        assert!(hint.unwrap().contains("organizationIds"));
+
+        let (legacy, _) = filter_tenants_for_organization(&rows, "org-x");
+        assert_eq!(legacy.len(), 2);
     }
 
     #[test]
