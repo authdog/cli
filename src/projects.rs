@@ -1,4 +1,4 @@
-//! `GET /v1/tenants/{tenantId}/projects` — projects within a tenant (REST API).
+//! `GET /v1/tenants/{tenantId}/projects` and application environment helpers (REST API).
 
 use anyhow::{Context, Result};
 use reqwest::blocking::Client;
@@ -92,6 +92,195 @@ pub fn compose_projects_report(
     };
 
     let mut sections = vec![body];
+    if let Some(note) = credentials_file_note {
+        sections.push(String::new());
+        sections.push(note);
+    }
+    sections.join("\n")
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectRow {
+    pub id: String,
+    pub name: Option<String>,
+    pub project_type: Option<String>,
+}
+
+impl ProjectRow {
+    fn sort_key(&self) -> (String, String) {
+        let name = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        (name, self.id.clone())
+    }
+
+    /// Primary label for list rows (`name`, else id).
+    pub fn display_primary(&self) -> String {
+        self.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.id.clone())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnvironmentRow {
+    pub id: String,
+    pub name: Option<String>,
+}
+
+impl EnvironmentRow {
+    fn sort_key(&self) -> (String, String) {
+        let name = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        (name, self.id.clone())
+    }
+
+    pub fn display_primary(&self) -> String {
+        self.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.id.clone())
+    }
+}
+
+/// Projects array from **`GET /v1/tenants/{id}/projects`** (`projects` array on object or root array).
+pub fn project_rows_from_body(body: &Value) -> Vec<ProjectRow> {
+    let arrays: &[&[Value]] = if let Some(a) = body.get("projects").and_then(|v| v.as_array()) {
+        &[a.as_slice()]
+    } else if let Some(a) = body.as_array() {
+        &[a.as_slice()]
+    } else {
+        &[]
+    };
+    let mut out: Vec<ProjectRow> = Vec::new();
+    for arr in arrays {
+        for item in *arr {
+            let Some(id) = item.get("id").and_then(|x| x.as_str()).map(str::trim) else {
+                continue;
+            };
+            if id.is_empty() {
+                continue;
+            }
+            let name = item
+                .get("name")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let project_type = item
+                .get("type")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            out.push(ProjectRow {
+                id: id.to_string(),
+                name,
+                project_type,
+            });
+        }
+    }
+    out.sort_by_key(|r| r.sort_key());
+    out.dedup_by(|a, b| a.id == b.id);
+    out
+}
+
+/// Environments array from **`GET …/applications/{id}/environments`** (`environments` on object).
+pub fn environment_rows_from_body(body: &Value) -> Vec<EnvironmentRow> {
+    let arrays: &[&[Value]] = if let Some(a) = body.get("environments").and_then(|v| v.as_array()) {
+        &[a.as_slice()]
+    } else if let Some(a) = body.as_array() {
+        &[a.as_slice()]
+    } else {
+        &[]
+    };
+    let mut out: Vec<EnvironmentRow> = Vec::new();
+    for arr in arrays {
+        for item in *arr {
+            let Some(id) = item.get("id").and_then(|x| x.as_str()).map(str::trim) else {
+                continue;
+            };
+            if id.is_empty() {
+                continue;
+            }
+            let name = item
+                .get("name")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            out.push(EnvironmentRow {
+                id: id.to_string(),
+                name,
+            });
+        }
+    }
+    out.sort_by_key(|r| r.sort_key());
+    out.dedup_by(|a, b| a.id == b.id);
+    out
+}
+
+/// `GET …/v1/tenants/{tenant_id}/applications/{application_id}/environments`
+pub fn fetch_application_environments(
+    access_token: &str,
+    tenant_id: &str,
+    application_id: &str,
+) -> Result<Value> {
+    let origin = crate::whoami::api_origin();
+    let base = origin.trim_end_matches('/');
+    let url = format!("{base}/v1/tenants/{tenant_id}/applications/{application_id}/environments");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent(concat!("authdog-cli/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("build HTTP client for application environments")?;
+    let resp = client
+        .get(&url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .bearer_auth(access_token)
+        .send()
+        .with_context(|| format!("GET {url}"))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .context("read application environments response body")?;
+    if !status.is_success() {
+        anyhow::bail!("{}", projects_error_body_preview(status, &body))
+    }
+    serde_json::from_str(&body).context("application environments response is not valid JSON")
+}
+
+/// Session output after `/browse` finishes on an environment.
+pub fn compose_selected_environment_report(
+    access_token: &str,
+    tenant_id: &str,
+    application_id: &str,
+    environment_id: &str,
+    snapshot: Value,
+    credentials_file_note: Option<String>,
+) -> String {
+    let origin = crate::whoami::api_origin();
+    let base_shown = origin.trim_end_matches('/');
+    let path_note =
+        format!("{base_shown}/v1/tenants/{tenant_id}/applications/{application_id}/environments",);
+    let selected = serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| snapshot.to_string());
+    let mut sections = vec![format!(
+        "── Project environment ──\nTenant: {tenant_id}\nProject (application): {application_id}\nEnvironment: {environment_id}\nEndpoint context: {path_note}\n{selected}",
+    )];
     if let Some(note) = credentials_file_note {
         sections.push(String::new());
         sections.push(note);
