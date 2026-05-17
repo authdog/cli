@@ -1,5 +1,8 @@
 //! Authdog CLI — full-screen Ratatui (Crossterm) interface.
 
+use authdog_cli::cli_login;
+use authdog_cli::session_store;
+
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
@@ -54,6 +57,12 @@ const SEL_FG: Color = Color::Rgb(35, 20, 40);
 const STATUS_OK: Color = Color::Rgb(212, 189, 230);
 const STATUS_ERR: Color = Color::Rgb(240, 188, 212);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SubmitEffect {
+    None,
+    BrowserLogin,
+}
+
 #[derive(Default)]
 struct App {
     quit: bool,
@@ -75,7 +84,7 @@ impl App {
         while !self.quit {
             term.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(250))? {
-                self.on_event(event::read()?)?;
+                self.on_event(event::read()?, term)?;
             }
         }
         Ok(())
@@ -259,7 +268,7 @@ impl App {
         f.set_cursor_position((area.x + cx, area.y + 1));
     }
 
-    fn on_event(&mut self, ev: Event) -> Result<()> {
+    fn on_event(&mut self, ev: Event, term: &mut DefaultTerminal) -> Result<()> {
         match ev {
             Event::Resize(_, _) => {}
             Event::Key(ke) => {
@@ -282,42 +291,33 @@ impl App {
                         return Ok(());
                     }
                     KeyCode::Enter => {
-                        if let Some(ref idxs) = palette {
+                        let line_to_submit = if let Some(idxs) = palette.as_ref() {
                             if let Some(si) = self.list_state.selected() {
                                 if let Some(&ci) = idxs.get(si) {
-                                    let cmd =
-                                        format!("/{}", CMDS.get(ci).map(|c| c.name).unwrap_or(""));
-                                    self.run_line(cmd);
-                                    self.input.reset();
-                                    self.list_state.select(None);
-                                    return Ok(());
+                                    format!("/{}", CMDS.get(ci).map(|c| c.name).unwrap_or(""))
+                                } else {
+                                    self.input.value().trim().to_string()
                                 }
+                            } else if idxs.len() == 1 {
+                                format!("/{}", CMDS.get(idxs[0]).map(|c| c.name).unwrap_or(""))
+                            } else {
+                                self.input.value().trim().to_string()
                             }
-                            if idxs.len() == 1 {
-                                let ci = idxs[0];
-                                let cmd =
-                                    format!("/{}", CMDS.get(ci).map(|c| c.name).unwrap_or(""));
-                                self.run_line(cmd);
-                                self.input.reset();
-                                self.list_state.select(None);
-                                return Ok(());
-                            }
-                        }
-                        let line = self.input.value().trim().to_string();
-                        self.run_line(line);
+                        } else {
+                            self.input.value().trim().to_string()
+                        };
+
+                        let effect = self.apply_submit(&line_to_submit);
                         self.input.reset();
                         self.list_state.select(None);
+                        self.handle_submit_followup(term, effect)?;
                         return Ok(());
                     }
-                    KeyCode::Down => {
-                        if palette.as_ref().is_some_and(|v| !v.is_empty()) {
-                            self.list_state.select_next();
-                        }
+                    KeyCode::Down if palette.as_ref().is_some_and(|v| !v.is_empty()) => {
+                        self.list_state.select_next();
                     }
-                    KeyCode::Up => {
-                        if palette.as_ref().is_some_and(|v| !v.is_empty()) {
-                            self.list_state.select_previous();
-                        }
+                    KeyCode::Up if palette.as_ref().is_some_and(|v| !v.is_empty()) => {
+                        self.list_state.select_previous();
                     }
                     KeyCode::Tab => {
                         if let Some(ref idxs) = palette {
@@ -349,12 +349,45 @@ impl App {
         Ok(())
     }
 
-    fn run_line(&mut self, line: String) {
-        let line = line.trim().to_string();
+    fn handle_submit_followup(
+        &mut self,
+        term: &mut DefaultTerminal,
+        effect: SubmitEffect,
+    ) -> Result<()> {
+        let _ = term;
+        if effect != SubmitEffect::BrowserLogin {
+            return Ok(());
+        }
+        cli_login::suspend_tui_for_shell_io()?;
+        let cfg = cli_login::CliAuthConfig::from_env();
+        let result = cli_login::run_browser_login_blocking(&cfg);
+        if let Err(err) = cli_login::resume_tui_io() {
+            eprintln!("warning: failed to resume TUI (terminal mode): {err:#}");
+        }
+        match result {
+            Ok(()) => {
+                let path_msg = session_store::credentials_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "(could not resolve path)".into());
+                self.status = Some(format!(
+                    "Logged in.\nTokens saved to credentials file:\n{path_msg}",
+                ));
+                self.status_err = false;
+            }
+            Err(err) => {
+                self.status = Some(format!("Login failed:\n{err:#}",));
+                self.status_err = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_submit(&mut self, line: &str) -> SubmitEffect {
+        let line = line.trim();
         if line.is_empty() {
             self.status = None;
             self.status_err = false;
-            return;
+            return SubmitEffect::None;
         }
 
         let first = line
@@ -367,6 +400,7 @@ impl App {
         match first.as_str() {
             "quit" | "q" => {
                 self.quit = true;
+                SubmitEffect::None
             }
             "" | "help" | "h" | "?" => {
                 let buf: String = CMDS
@@ -376,19 +410,59 @@ impl App {
                     .join("\n");
                 self.status = Some(buf);
                 self.status_err = false;
+                SubmitEffect::None
             }
             "login" => {
-                self.status = Some("login: not implemented".into());
+                let cfg = cli_login::CliAuthConfig::from_env();
+                self.status = Some(format!(
+                    "Opening browser ({}/signin/{} …).\nAUTHDOG_IDENTITY_ORIGIN overrides the host (default: {}).",
+                    cfg.identity_origin, cfg.environment_id, cli_login::DEFAULT_IDENTITY_ORIGIN,
+                ));
                 self.status_err = false;
+                SubmitEffect::BrowserLogin
             }
-            "logout" => {
-                self.status = Some("logout: not implemented".into());
-                self.status_err = false;
-            }
-            "status" => {
-                self.status = Some("status: not implemented".into());
-                self.status_err = false;
-            }
+            "logout" => match session_store::clear_session() {
+                Ok(()) => {
+                    self.status = Some("Logged out locally (deleted credentials.json).".into());
+                    self.status_err = false;
+                    SubmitEffect::None
+                }
+                Err(err) => {
+                    self.status = Some(format!("{err:#}"));
+                    self.status_err = true;
+                    SubmitEffect::None
+                }
+            },
+            "status" => match session_store::load_session() {
+                Ok(Some(s)) => {
+                    let p = cmp::min(28, s.access_token.len());
+                    let preview = if p == 0 {
+                        String::new()
+                    } else {
+                        s.access_token[..p].to_string()
+                    };
+                    let path_show = session_store::credentials_path()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|_| "(unknown)".into());
+                    self.status = Some(format!(
+                        "Session file: {path_show}\nAccess token preview: {preview}… ({} chars)\nRefresh token: {} chars",
+                        s.access_token.len(),
+                        s.refresh_token.len(),
+                    ));
+                    self.status_err = false;
+                    SubmitEffect::None
+                }
+                Ok(None) => {
+                    self.status = Some("Not logged in (no credentials.json). Try /login.".into());
+                    self.status_err = false;
+                    SubmitEffect::None
+                }
+                Err(err) => {
+                    self.status = Some(format!("{err:#}"));
+                    self.status_err = true;
+                    SubmitEffect::None
+                }
+            },
             _other => {
                 if line.starts_with('/') {
                     self.status = Some(format!(
@@ -397,9 +471,10 @@ impl App {
                     ));
                     self.status_err = true;
                 } else {
-                    self.status = Some(line.clone());
+                    self.status = Some(line.to_string());
                     self.status_err = false;
                 }
+                SubmitEffect::None
             }
         }
     }
