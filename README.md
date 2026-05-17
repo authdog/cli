@@ -72,6 +72,8 @@ Upstream, that route is backed by Management GraphQL; error responses may includ
 
 Deployed API behaviour lives in **`platform-next/services/api`** (`/v1/tenants` handlers); ensure that stack matches your CLI version if tenants listing fails (`403`, `401`, empty list, etc.).
 
+If the error **`detail`** includes Cloudflare **`error code: 1003`**, the API Worker cannot reach Management by hostname (often `MANAGEMENT_ENDPOINT` is missing, wrong, or set to an **IP** instead of **`https://mgt.authdog.com/graphql`**—see **`platform-next/services/api/wrangler.prod.toml`** and Workers secrets for **`authdog-api-prod-v2`**).
+
 ## Offline note
 
 `/login` succeeds only with network connectivity to Identity and reachable loopback OAuth callback. Offline usage is mostly limited to reading stored credentials (`/status`) and inspecting JWT payloads (no server round-trip).

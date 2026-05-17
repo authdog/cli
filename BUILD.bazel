@@ -1,0 +1,66 @@
+load("@crates//:defs.bzl", "crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# Third-party crates for the workspace root package (`""` in `@crates//:defs.bzl`).
+_LIB_CRATES = [
+    "anyhow",
+    "base64",
+    "chrono",
+    "crossterm",
+    "directories",
+    "figlet-rs",
+    "open",
+    "ratatui",
+    "reqwest",
+    "serde",
+    "serde_json",
+    "tui-input",
+    "unicode-width",
+    "url",
+    "uuid",
+]
+
+# Crates `src/main.rs` references directly (`use …` paths), beyond the nested library imports.
+_BINARY_EXTRA_CRATES = [
+    "anyhow",
+    "crossterm",
+    "figlet-rs",
+    "ratatui",
+    "tui-input",
+    "unicode-width",
+]
+
+_DESKTOP_FEATURES = ["desktop"]
+
+rustc_pkg_version_env = {"CARGO_PKG_VERSION": "0.1.0"}
+
+rust_library(
+    name = "authdog_cli_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    compile_data = glob(["assets/**"]),
+    crate_features = _DESKTOP_FEATURES,
+    crate_name = "authdog_cli",
+    edition = "2021",
+    rustc_env = rustc_pkg_version_env,
+    deps = crate_deps(package_name="", deps=_LIB_CRATES),
+)
+
+rust_binary(
+    name = "authdog-cli",
+    srcs = ["src/main.rs"],
+    compile_data = glob(["assets/**"]),
+    crate_features = _DESKTOP_FEATURES,
+    crate_name = "authdog_cli",
+    edition = "2021",
+    rustc_env = rustc_pkg_version_env,
+    deps =
+        [
+            ":authdog_cli_lib",
+        ] +
+        crate_deps(package_name="", deps=_BINARY_EXTRA_CRATES),
+)

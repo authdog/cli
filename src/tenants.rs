@@ -18,8 +18,17 @@ fn summarize_body_preview(body: &str, max: usize) -> String {
     format!("{} … (+{} bytes)", &body[..cut], body.len() - cut)
 }
 
+fn append_cf_1003_ops_hint(mut message: String) -> String {
+    if message.contains("error code: 1003") {
+        message.push_str(
+            "\n  Hint (ops): Cloudflare 1003 means the Worker hit Management without a hostname Cloudflare accepts (often MANAGEMENT_ENDPOINT is an IP literal). Use https://mgt.authdog.com/graphql on authdog-api-prod-v2—or remove a conflicting Workers secret overriding wrangler.toml.",
+        );
+    }
+    message
+}
+
 fn tenants_error_body_preview(status: reqwest::StatusCode, body: &str) -> String {
-    if let Ok(v) = serde_json::from_str::<Value>(body) {
+    let base = if let Ok(v) = serde_json::from_str::<Value>(body) {
         let detail = v
             .get("detail")
             .and_then(|x| x.as_str())
@@ -28,14 +37,16 @@ fn tenants_error_body_preview(status: reqwest::StatusCode, body: &str) -> String
             .get("error")
             .and_then(|x| x.as_str())
             .filter(|s| !s.is_empty());
-        return match (err, detail) {
+        match (err, detail) {
             (Some(e), Some(d)) => format!("{status} — {e}: {d}"),
             (Some(e), None) => format!("{status} — {e}"),
             (None, Some(d)) => format!("{status} — {d}"),
             (None, None) => format!("{status} — {}", summarize_body_preview(body, 520)),
-        };
-    }
-    format!("{status} — {}", summarize_body_preview(body, 520))
+        }
+    } else {
+        format!("{status} — {}", summarize_body_preview(body, 520))
+    };
+    append_cf_1003_ops_hint(base)
 }
 
 /// `GET …/v1/tenants` with the access token.
@@ -89,6 +100,15 @@ pub fn compose_tenants_report(access_token: &str, credentials_file_note: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cf_1003_detail_appends_ops_hint() {
+        let body = r#"{"error":"Failed","detail":"403: error code: 1003 | 403: error code: 1003"}"#;
+        let s = tenants_error_body_preview(reqwest::StatusCode::FORBIDDEN, body);
+        assert!(s.contains("error code: 1003"));
+        assert!(s.contains("Hint (ops):"));
+        assert!(s.contains("mgt.authdog.com"));
+    }
 
     #[test]
     fn error_preview_extracts_rest_detail_json() {
