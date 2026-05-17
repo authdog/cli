@@ -1,5 +1,5 @@
 load("@crates//:defs.bzl", "crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -40,7 +40,10 @@ rust_library(
     name = "authdog_cli_lib",
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = ["src/main.rs"],
+        exclude = [
+            "src/main.rs",
+            "src/tui_output.rs",
+        ],
     ),
     compile_data = glob(["assets/**"]),
     crate_features = _DESKTOP_FEATURES,
@@ -52,10 +55,12 @@ rust_library(
 
 rust_binary(
     name = "authdog-cli",
-    srcs = ["src/main.rs"],
+    srcs = [
+        "src/main.rs",
+        "src/tui_output.rs",
+    ],
     compile_data = glob(["assets/**"]),
     crate_features = _DESKTOP_FEATURES,
-    crate_name = "authdog_cli",
     edition = "2021",
     rustc_env = rustc_pkg_version_env,
     deps =
@@ -63,4 +68,12 @@ rust_binary(
             ":authdog_cli_lib",
         ] +
         crate_deps(package_name="", deps=_BINARY_EXTRA_CRATES),
+)
+
+rust_test(
+    name = "authdog_cli_lib_test",
+    crate = ":authdog_cli_lib",
+    crate_features = _DESKTOP_FEATURES,
+    edition = "2021",
+    rustc_env = rustc_pkg_version_env,
 )

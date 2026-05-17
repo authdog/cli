@@ -1,4 +1,4 @@
-.PHONY: all build release run clean check fmt clippy test wasm tenants
+.PHONY: all build release run clean check fmt clippy test wasm tenants bazel-build bazel-test
 
 all: build
 
@@ -41,3 +41,11 @@ tenants:
 
 clean:
 	cargo clean
+
+## Hermetic build via Bazel (requires Bazelisk or `bazel` on PATH; see `.bazelversion`).
+bazel-build:
+	bazel build //:authdog-cli
+
+## Library unit tests under Bazel (`src/tui_output.rs` tests stay on `cargo test` only).
+bazel-test:
+	bazel test //:authdog_cli_lib_test
