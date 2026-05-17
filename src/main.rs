@@ -4,6 +4,7 @@ mod tui_output;
 
 use authdog_cli::cli_login;
 use authdog_cli::session_store;
+use authdog_cli::organizations;
 use authdog_cli::tenants;
 use authdog_cli::whoami;
 
@@ -50,6 +51,10 @@ const CMDS: &[SlashCmd] = &[
     SlashCmd {
         name: "tenants",
         desc: "Tenants from api.authdog.com (/v1/tenants)",
+    },
+    SlashCmd {
+        name: "organizations",
+        desc: "Organizations (/v1/organizations; alias /orgs)",
     },
     SlashCmd {
         name: "status",
@@ -651,6 +656,31 @@ impl App {
                 Ok(None) => {
                     self.status = Some(
                         "Not logged in (/tenants).\nTry /login, or use /status to confirm files."
+                            .into(),
+                    );
+                    self.status_err = false;
+                    SubmitEffect::None
+                }
+                Err(err) => {
+                    self.status = Some(format!("{err:#}"));
+                    self.status_err = true;
+                    SubmitEffect::None
+                }
+            },
+            "organizations" | "orgs" => match session_store::load_session() {
+                Ok(Some(s)) => {
+                    self.status = Some(organizations::compose_organizations_report(
+                        &s.access_token,
+                        session_store::credentials_path()
+                            .ok()
+                            .map(|path| format!("credentials file: {}", path.display())),
+                    ));
+                    self.status_err = false;
+                    SubmitEffect::None
+                }
+                Ok(None) => {
+                    self.status = Some(
+                        "Not logged in (/organizations).\nTry /login, or use /status to confirm files."
                             .into(),
                     );
                     self.status_err = false;

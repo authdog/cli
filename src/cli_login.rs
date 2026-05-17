@@ -333,9 +333,7 @@ pub fn run_browser_login_blocking(cfg: &CliAuthConfig) -> Result<()> {
     let signin_url =
         cli_signin_url(cfg, &sess, loopback_port).context("build Identity sign-in URL")?;
 
-    eprintln!(
-        "Listening on http://127.0.0.1:{loopback_port}{LOOPBACK_OAUTH_REDIRECT_PATH} for the OAuth redirect.",
-    );
+    eprintln!("Redirecting to your browser for authentication…");
 
     open::that(&signin_url).with_context(|| format!("open {signin_url}"))?;
 

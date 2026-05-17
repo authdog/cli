@@ -63,11 +63,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Restore/save repo + disk + external caches keyed by lockfiles/manifests; see
+      # https://github.com/bazel-contrib/setup-bazel/blob/main/README.md
       - uses: bazel-contrib/setup-bazel@0.19.0
         with:
           bazelisk-cache: true
+          # Bump when deliberately invalidating CI cache (rules upgrade, breakage, …).
+          cache-version: '1'
           disk-cache: ${{ github.workflow }}
-          repository-cache: true
+          repository-cache: |
+            - MODULE.bazel
+            - MODULE.bazel.lock
+            - Cargo.toml
+            - Cargo.lock
+          # rules_rust + downloaded toolchains/archives often land in externals (>10MiB).
+          external-cache: true
+          # PRs consume default-branch caches but avoid writing polluted keys back.
+          cache-save: ${{ github.event_name != 'pull_request' }}
 
       - name: Bazel build (desktop CLI)
         run: bazel build //:authdog-cli

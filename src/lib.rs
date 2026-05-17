@@ -8,3 +8,5 @@ pub mod cli_login;
 pub mod session_store;
 #[cfg(feature = "desktop")]
 pub mod tenants;
+#[cfg(feature = "desktop")]
+pub mod organizations;
