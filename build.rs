@@ -11,11 +11,9 @@ fn main() {
         .unwrap_or_default();
     let month_year = naive.format("%B-%Y").to_string();
 
-    let guid = uuid::Uuid::new_v4().hyphenated().to_string();
     let sha = git_short_sha().unwrap_or_else(|| "unknown".to_string());
 
     println!("cargo:rustc-env=AUTHDOG_CLI_MONTH_YEAR={month_year}");
-    println!("cargo:rustc-env=AUTHDOG_CLI_BUILD_GUID={guid}");
     println!("cargo:rustc-env=AUTHDOG_CLI_GIT_SHA={sha}");
 
     println!("cargo:rerun-if-changed=.git/HEAD");

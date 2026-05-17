@@ -39,7 +39,6 @@ _DESKTOP_FEATURES = ["desktop"]
 rustc_pkg_env = {
     "CARGO_PKG_VERSION": "0.1.0",
     "AUTHDOG_CLI_MONTH_YEAR": "bazel-unknown",
-    "AUTHDOG_CLI_BUILD_GUID": "00000000-0000-4000-8000-0000000000bzl",
     "AUTHDOG_CLI_GIT_SHA": "bazel-unknown",
 }
 

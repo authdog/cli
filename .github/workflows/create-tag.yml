@@ -3,7 +3,7 @@ name: Create release tag
 # Creates/pushes annotated tag from `./Cargo.toml`:
 # - `[package.metadata.authdog-release].stable=false` → `v{version}-beta.{n}` (n increments)
 # - `stable=true` → `v{version}`
-# Workflow ref selects the commit Actions tags. Push triggers `.github/workflows/release.yml`.
+# Push to GitHub fires `.github/workflows/release.yml` automatically (unless Actions are disabled).
 
 permissions:
   contents: write

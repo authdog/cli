@@ -695,11 +695,9 @@ impl App {
     ) {
         fn cli_tagline() -> String {
             format!(
-                "CLI . Version ({}) . ({}) . {} ({})",
+                "CLI . Version ({}) . ({}) . {}",
                 env!("CARGO_PKG_VERSION"),
                 option_env!("AUTHDOG_CLI_MONTH_YEAR").unwrap_or("unknown-month-year"),
-                option_env!("AUTHDOG_CLI_BUILD_GUID")
-                    .unwrap_or("00000000-0000-4000-8000-000000000002"),
                 option_env!("AUTHDOG_CLI_GIT_SHA").unwrap_or("unknown-git-sha"),
             )
         }

@@ -98,7 +98,8 @@ pub fn styled_status_lines(
         }
 
         if block == DocBlock::ApiJsonBody && line.trim().is_empty() {
-            block = DocBlock::Neutral;
+            // Keep ApiJsonBody: Pretty `/whoami` uses blank lines between sections; resetting would
+            // drop key/value coloring for everything after the first blank line.
             out.push(Line::default());
             continue;
         }
@@ -206,6 +207,33 @@ fn prepend_indent(indent: &str, body: Line<'static>, palette: OutputPalette) -> 
     Line::from(spans)
 }
 
+fn pretty_underline_row(trimmed: &str) -> bool {
+    let t = trimmed.trim();
+    t.len() >= 4 && t.chars().all(|c| c == '─' || c == '-' || c == '=')
+}
+
+/// Short non-`key: value` heading lines in Pretty identity output (meta/session/user titles).
+fn pretty_section_heading(trimmed: &str) -> bool {
+    if trimmed.contains(':') {
+        return false;
+    }
+    let t = trimmed.trim();
+    if t.is_empty() || t.len() > 56 {
+        return false;
+    }
+    if t.starts_with("(could not") {
+        return false;
+    }
+    if t.chars().filter(|c| c.is_whitespace()).count() > 6 {
+        return false;
+    }
+    let mut it = t.chars();
+    let Some(first) = it.next() else {
+        return false;
+    };
+    first.is_alphabetic() || first == '#'
+}
+
 /// JWT claim lines (`key: value` or `Other claims:`) with indentation preserved on the left.
 fn highlight_maybe_claim_line(
     _full: &str,
@@ -232,6 +260,28 @@ fn highlight_maybe_claim_line(
         return Line::from(spans);
     }
 
+    if pretty_underline_row(trimmed) {
+        spans.push(Span::styled(
+            trimmed.to_string(),
+            Style::default().fg(palette.sep),
+        ));
+        return Line::from(spans);
+    }
+
+    if pretty_section_heading(trimmed) {
+        spans.push(Span::styled(
+            trimmed.to_string(),
+            if indent.is_empty() {
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette.accent)
+            },
+        ));
+        return Line::from(spans);
+    }
+
     spans.extend(highlight_kv_fallback_spans(trimmed, palette, base));
     Line::from(spans)
 }
@@ -252,7 +302,7 @@ fn highlight_kv_fallback_spans(t: &str, palette: OutputPalette, base: Style) -> 
     let spacer = t.get(after..spacer_end).unwrap_or("");
     let tail = t.get(spacer_end..).unwrap_or("");
 
-    vec![
+    let mut spans = vec![
         Span::styled(
             key_frag.to_string(),
             Style::default()
@@ -260,8 +310,61 @@ fn highlight_kv_fallback_spans(t: &str, palette: OutputPalette, base: Style) -> 
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(spacer.to_string(), Style::default().fg(palette.muted)),
-        Span::styled(tail.to_string(), base),
-    ]
+    ];
+    spans.extend(style_pretty_value_spans(tail, palette, base));
+    spans
+}
+
+fn style_pretty_value_spans(tail: &str, palette: OutputPalette, base: Style) -> Vec<Span<'static>> {
+    let string_val = Style::default().fg(Color::Rgb(255, 218, 160));
+    let number_style = Style::default().fg(Color::Rgb(160, 220, 255));
+    let kw_style = Style::default().fg(Color::Rgb(199, 170, 255));
+
+    let lead_ws_len = tail.len().saturating_sub(tail.trim_start().len());
+    let (pad, rest) = tail.split_at(lead_ws_len);
+    let mut out: Vec<Span<'static>> = Vec::new();
+    if !pad.is_empty() {
+        out.push(Span::styled(
+            pad.to_string(),
+            Style::default().fg(palette.muted),
+        ));
+    }
+
+    let ct = rest.trim();
+    if ct.is_empty() {
+        return out;
+    }
+
+    if !ct.contains(char::is_whitespace) {
+        let sty = if ct == "true" || ct == "false" || ct == "null" {
+            kw_style
+        } else if ct == "(empty)" || ct == "—" {
+            Style::default().fg(palette.muted).italic()
+        } else if is_ascii_number_token(ct) {
+            number_style
+        } else {
+            string_val
+        };
+        out.push(Span::styled(rest.to_string(), sty));
+        return out;
+    }
+
+    out.push(Span::styled(rest.to_string(), base));
+    out
+}
+
+fn is_ascii_number_token(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if t.parse::<i128>().is_ok() {
+        return true;
+    }
+    if t.contains('.') && t.parse::<f64>().is_ok() {
+        return true;
+    }
+    false
 }
 
 #[allow(clippy::too_many_lines)]
@@ -448,6 +551,30 @@ mod tests {
                 .iter()
                 .any(|sp| sp.content.contains("projects")),
             "{lines:?}",
+        );
+    }
+
+    #[test]
+    fn whoami_pretty_blank_lines_keep_kv_coloring() {
+        let s = concat!(
+            "── Identity (https://example/v1/userinfo) ──\n",
+            "Meta\n",
+            "────────\n",
+            "  code:                200\n",
+            "\n",
+            "Session\n",
+            "────────\n",
+            "  remainingSeconds:    7200\n",
+        );
+        let lines = styled_status_lines(s, pal(), false);
+        let row = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|sp| sp.content.contains("remainingSeconds")))
+            .expect("session kv line after blank separator");
+        assert!(
+            row.spans.len() >= 2,
+            "expected split key/value spans: {:?}",
+            row.spans
         );
     }
 

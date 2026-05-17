@@ -1,15 +1,23 @@
 name: Release
 
-# Ship multi-platform binaries for tag pushes (recommended: semver tags like v0.1.0 or v0.1.0-beta.1).
+# Multi-platform binaries + GitHub Release for version tags pushed to GitHub (e.g. `git push origin v0.1.0`).
+# Tag format follows `Makefile tag-push` / "Create release tag" workflow (`v{X.Y.Z}` or `v{X.Y.Z-beta.<n>`).
+# Manual re-run from the Actions tab for an existing tag: workflow_dispatch with the same tag name.
 
 on:
   push:
     tags:
       # Semver-ish tags only (avoids accidental runs on unrelated tags).
       - "v[0-9]*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish (e.g. v0.1.0 or v0.1.0-beta.1)"
+        required: true
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -19,10 +27,24 @@ env:
   BIN_NAME: authdog-cli
   CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
+  assert-release-tag:
+    name: Assert tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
+
+      - name: Assert release tag
+        run: python3 scripts/assert_release_tag_matches_cargo.py
+
   packages:
     name: ${{ matrix.target }}
+    needs: assert-release-tag
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -63,6 +85,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -89,7 +112,7 @@ jobs:
       - name: Package
         shell: bash
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.RELEASE_TAG }}
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
@@ -139,9 +162,8 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
-          prerelease: >-
-            ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') ||
-            contains(github.ref_name, 'rc') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'alpha') || contains(env.RELEASE_TAG, 'rc') }}

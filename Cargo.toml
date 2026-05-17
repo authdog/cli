@@ -17,7 +17,6 @@ stable = false
 
 [build-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-uuid = { version = "1", features = ["v4"] }
 
 [lib]
 path = "src/lib.rs"
