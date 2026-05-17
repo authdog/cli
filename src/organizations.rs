@@ -7,6 +7,68 @@ use std::time::Duration;
 
 const ORGANIZATIONS_PATH: &str = "/v1/organizations";
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrgRow {
+    pub id: String,
+    pub name: Option<String>,
+}
+
+impl OrgRow {
+    fn sort_key(&self) -> (String, String) {
+        (
+            self.name.clone().unwrap_or_default().to_ascii_lowercase(),
+            self.id.clone(),
+        )
+    }
+
+    /// Prefer org name when present for selection rows and browse headers.
+    pub fn display_primary(&self) -> String {
+        if let Some(ref n) = self.name {
+            let t = n.trim();
+            if !t.is_empty() {
+                return t.to_string();
+            }
+        }
+        self.id.clone()
+    }
+}
+
+/// Organizations from a **`GET /v1/organizations`** payload (`organizations` array or JSON array root).
+pub fn organization_rows_from_body(body: &Value) -> Vec<OrgRow> {
+    let arrays: &[&[Value]] = if let Some(a) = body.get("organizations").and_then(|v| v.as_array())
+    {
+        &[a.as_slice()]
+    } else if let Some(a) = body.as_array() {
+        &[a.as_slice()]
+    } else {
+        &[]
+    };
+    let mut rows: Vec<OrgRow> = Vec::new();
+    for arr in arrays {
+        for item in *arr {
+            let Some(id) = item.get("id").and_then(|x| x.as_str()).map(str::trim) else {
+                continue;
+            };
+            if id.is_empty() {
+                continue;
+            }
+            let name = item
+                .get("name")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            rows.push(OrgRow {
+                id: id.to_string(),
+                name,
+            });
+        }
+    }
+    rows.sort_by_key(|r| r.sort_key());
+    rows.dedup_by(|a, b| a.id == b.id);
+    rows
+}
+
 fn summarize_body_preview(body: &str, max: usize) -> String {
     if body.len() <= max {
         return body.to_string();
@@ -104,6 +166,18 @@ pub fn compose_organizations_report(
 mod tests {
     use super::*;
 
+    #[test]
+    fn parses_organization_rows() {
+        let v: Value =
+            serde_json::from_str(r#"{"organizations":[{"id":"o1","name":"Acme"},{"id":"o2"}]}"#)
+                .unwrap();
+        let rows = organization_rows_from_body(&v);
+        assert_eq!(rows.len(), 2);
+        let o1 = rows.iter().find(|r| r.id == "o1").expect("o1");
+        let o2 = rows.iter().find(|r| r.id == "o2").expect("o2");
+        assert_eq!(o1.name.as_deref(), Some("Acme"));
+        assert!(o2.name.is_none());
+    }
     #[test]
     fn cf_1003_detail_appends_ops_hint() {
         let body = r#"{"error":"Failed","detail":"403: error code: 1003 | 403: error code: 1003"}"#;

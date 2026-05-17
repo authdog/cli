@@ -1,9 +1,12 @@
 //! Full-screen Ratatui shell: layout, input, and session output pane.
 
+use crate::browse::{BrowseSession, BrowseStep};
 use crate::commands::{apply_submit, slash_palette_indices, SubmitEffect, CMDS};
 use crate::tui_output;
 
 use authdog_cli::cli_login;
+use authdog_cli::organizations::OrgRow;
+use authdog_cli::tenants::TenantRow;
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -66,6 +69,9 @@ pub struct App {
     pub(crate) quit: bool,
     pub(crate) input: Input,
     pub(crate) list_state: ListState,
+    /// `/browse` pickers reuse this list (organizations, then tenants).
+    pub(crate) browse_list_state: ListState,
+    pub(crate) browse: Option<BrowseSession>,
     pub(crate) status: Option<String>,
     pub(crate) status_err: bool,
     /// When set, clear `status` once `Instant::now()` passes (transient toasts).
@@ -87,6 +93,70 @@ impl App {
                 self.status_clear_at = None;
             }
         }
+    }
+
+    fn browse_exclusive(&self, palette: &Option<Vec<usize>>) -> bool {
+        self.browse.is_some() && palette.as_ref().map_or(true, |cmds| cmds.is_empty())
+    }
+
+    fn browse_list_len(&self) -> usize {
+        self.browse
+            .as_ref()
+            .map(|b| match &b.step {
+                BrowseStep::PickOrganization => b.organizations.len(),
+                BrowseStep::PickTenant { tenants, .. } => tenants.len(),
+            })
+            .unwrap_or(0)
+    }
+
+    fn sync_browse_list_selection(&mut self) {
+        let len = self.browse_list_len();
+        match self.browse_list_state.selected() {
+            Some(s) if s < len => {}
+            _ if len > 0 => self.browse_list_state.select(Some(0)),
+            _ => self.browse_list_state.select(None),
+        }
+    }
+
+    fn handle_browse_enter(&mut self) -> Result<()> {
+        let sel = self.browse_list_state.selected().unwrap_or(0);
+        let Some(mut session) = self.browse.take() else {
+            return Ok(());
+        };
+        match session.step {
+            BrowseStep::PickOrganization => match session.activate_organization(sel) {
+                Ok(advisory) => {
+                    self.browse = Some(session);
+                    self.browse_list_state.select(Some(0));
+                    self.sync_browse_list_selection();
+                    if let Some(msg) = advisory {
+                        self.status = Some(msg);
+                        self.status_err = false;
+                        self.status_clear_at = None;
+                    }
+                }
+                Err(e) => {
+                    self.browse = Some(session);
+                    self.status = Some(format!("{e:#}"));
+                    self.status_err = true;
+                    self.status_clear_at = None;
+                }
+            },
+            BrowseStep::PickTenant { .. } => match session.activate_tenant_choice(sel) {
+                Ok(text) => {
+                    self.status = Some(text);
+                    self.status_err = false;
+                    self.status_clear_at = None;
+                    self.browse_list_state.select(None);
+                }
+                Err(e) => {
+                    self.browse = Some(session);
+                    self.status = Some(format!("{e:#}"));
+                    self.status_err = true;
+                }
+            },
+        }
+        Ok(())
     }
 
     pub fn run(mut self, term: &mut DefaultTerminal) -> Result<()> {
@@ -119,6 +189,7 @@ impl App {
         }
 
         let palette = slash_palette_indices(self.input.value());
+        let browse_open = self.browse.is_some();
 
         let (banner_lines, banner_h) = figlet_banner_lines(outer.width);
 
@@ -153,30 +224,44 @@ impl App {
 
         self.draw_session_output(f, spacer);
 
-        self.draw_input_and_cursor(f, input_chunk);
+        self.draw_input_and_cursor(f, input_chunk, browse_open);
 
-        let mut hint = vec![
-            "↑↓".dim(),
-            " choose · Tab · ".into(),
-            "Enter".bold(),
-            " run · Esc".into(),
-            " leave · Ctrl+C quit".dim(),
-        ];
-        if self.status.is_some() {
-            hint.push(Span::raw(" · "));
-            hint.push(Span::styled(
-                "PgUp/PgDn",
-                Style::default().fg(TXT).add_modifier(Modifier::BOLD),
-            ));
-            hint.push(Span::raw("/"));
-            hint.push(Span::styled(
-                "Home/End",
-                Style::default().fg(TXT).add_modifier(Modifier::BOLD),
-            ));
-            hint.push(Span::styled(" output", Style::default().fg(TXT_DIM)));
-        }
+        let hint_line = if browse_open {
+            Line::from(vec![
+                "Browse ".into(),
+                "↑↓".dim(),
+                " pick · ".into(),
+                "Enter".bold(),
+                " open · ".into(),
+                "Esc".bold(),
+                " back / exit browse · Ctrl+C quit".dim(),
+            ])
+        } else {
+            let mut hint = vec![
+                "↑↓".dim(),
+                " choose · Tab · ".into(),
+                "Enter".bold(),
+                " run · Esc".into(),
+                " leave · Ctrl+C quit".dim(),
+            ];
+            if self.status.is_some() {
+                hint.push(Span::raw(" · "));
+                hint.push(Span::styled(
+                    "PgUp/PgDn",
+                    Style::default().fg(TXT).add_modifier(Modifier::BOLD),
+                ));
+                hint.push(Span::raw("/"));
+                hint.push(Span::styled(
+                    "Home/End",
+                    Style::default().fg(TXT).add_modifier(Modifier::BOLD),
+                ));
+                hint.push(Span::styled(" output", Style::default().fg(TXT_DIM)));
+            }
+            Line::from(hint)
+        };
+
         f.render_widget(
-            Paragraph::new(Line::from(hint))
+            Paragraph::new(hint_line)
                 .style(Style::default().fg(TXT_DIM))
                 .bg(BG),
             foot_chunk,
@@ -200,7 +285,7 @@ impl App {
         let mut lines = banner_lines;
         lines.push(Line::default());
         lines.push(Line::from(vec![Span::styled(
-            "interactive CLI",
+            concat!("CLI . Version (", env!("CARGO_PKG_VERSION"), ")"),
             Style::default().fg(TXT_DIM).italic(),
         )]));
         lines.push(Line::default());
@@ -225,6 +310,19 @@ impl App {
     fn draw_session_output(&mut self, f: &mut ratatui::Frame<'_>, area: Rect) {
         if area.height < 3 || area.width < 14 {
             f.render_widget(Paragraph::new("").style(Style::default().bg(BG)), area);
+            return;
+        }
+
+        if self.browse.is_some() {
+            self.sync_browse_list_selection();
+            let session = self
+                .browse
+                .as_ref()
+                .cloned()
+                .expect("browse state checked immediately above");
+            self.draw_browse_panel(f, area, &session);
+            self.last_status_viewport_h = area.height.saturating_sub(2).max(1);
+            self.last_status_scroll_row_max = 0;
             return;
         }
 
@@ -292,6 +390,80 @@ impl App {
         f.render_widget(paragraph, area);
     }
 
+    fn draw_browse_panel(
+        &mut self,
+        f: &mut ratatui::Frame<'_>,
+        area: Rect,
+        session: &BrowseSession,
+    ) {
+        let inner = area;
+
+        let show_note = matches!(&session.step, BrowseStep::PickTenant { .. })
+            && self
+                .status
+                .as_ref()
+                .is_some_and(|s| !self.status_err && !s.trim().is_empty());
+
+        let list_area = if show_note && inner.height > 7 {
+            let note_h = (inner.height / 5).clamp(3, inner.height / 3);
+            let [note_chunk, rest] =
+                Layout::vertical([Constraint::Length(note_h), Constraint::Fill(1)]).areas(inner);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(BORDER)
+                .title(Line::from(Span::styled(
+                    "Note",
+                    Style::default().fg(TXT_DIM).italic(),
+                )))
+                .style(Style::default().bg(SURFACE_HI));
+            let inset = block.inner(note_chunk);
+
+            let note_text = match &self.status {
+                Some(s) if !self.status_err => s.trim(),
+                _ => "",
+            };
+
+            let p = Paragraph::new(note_text)
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(TXT_DIM).bg(SURFACE_HI));
+
+            f.render_widget(block, note_chunk);
+            f.render_widget(p, inset);
+
+            rest
+        } else {
+            inner
+        };
+
+        let vw = usize::from(list_area.width.max(3).saturating_sub(4));
+
+        let items: Vec<ListItem<'_>> = match &session.step {
+            BrowseStep::PickOrganization => session
+                .organizations
+                .iter()
+                .map(|o| ListItem::new(browse_org_line(o, vw)))
+                .collect(),
+            BrowseStep::PickTenant { tenants, .. } => tenants
+                .iter()
+                .map(|t| ListItem::new(browse_tenant_line(t, vw)))
+                .collect(),
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(BORDER)
+            .title(browse_block_title(session))
+            .style(Style::default().bg(SURFACE_HI));
+
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(Style::default().bg(SEL_BG).fg(SEL_FG).bold())
+            .highlight_symbol("› ");
+
+        f.render_stateful_widget(list, list_area, &mut self.browse_list_state);
+    }
+
     fn draw_menu(&mut self, f: &mut ratatui::Frame<'_>, area: Rect, idxs: &[usize]) {
         let cmd_w = 14usize;
         let items: Vec<ListItem<'_>> = idxs
@@ -326,8 +498,10 @@ impl App {
         f.render_stateful_widget(list, area, &mut self.list_state);
     }
 
-    fn draw_input_and_cursor(&self, f: &mut ratatui::Frame<'_>, area: Rect) {
+    fn draw_input_and_cursor(&self, f: &mut ratatui::Frame<'_>, area: Rect, browse_open: bool) {
         const PLACEHOLDER: &str = "Add a follow-up";
+        const PLACEHOLDER_BROWSE: &str =
+            "/browse · ↑↓ Enter · Esc to go back or exit browse · /slash still works";
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -359,9 +533,15 @@ impl App {
         let value_w = value_area.width.max(1) as usize;
         let scroll = self.input.visual_scroll(value_w);
 
+        let placeholder = if browse_open {
+            PLACEHOLDER_BROWSE
+        } else {
+            PLACEHOLDER
+        };
+
         let value_par = if self.input.value().is_empty() {
             Paragraph::new(Line::from(vec![Span::styled(
-                PLACEHOLDER,
+                placeholder,
                 Style::default().fg(TXT_DIM),
             )]))
             .style(Style::default().bg(SURFACE))
@@ -386,6 +566,7 @@ impl App {
                     return Ok(());
                 }
                 let palette = slash_palette_indices(self.input.value());
+                let browse_exclusive = self.browse_exclusive(&palette);
                 match ke.code {
                     KeyCode::Char('c') if ke.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.quit = true;
@@ -397,10 +578,31 @@ impl App {
                             self.list_state.select(None);
                             return Ok(());
                         }
+                        if self.browse.is_some() {
+                            let mut exited = false;
+                            if let Some(ref mut sess) = self.browse {
+                                if sess.pop_to_organizations() {
+                                    self.status = None;
+                                    self.status_err = false;
+                                    self.browse_list_state.select(Some(0));
+                                    self.sync_browse_list_selection();
+                                    exited = true;
+                                }
+                            }
+                            if !exited {
+                                self.browse = None;
+                                self.browse_list_state.select(None);
+                            }
+                            return Ok(());
+                        }
                         self.quit = true;
                         return Ok(());
                     }
                     KeyCode::Enter => {
+                        if browse_exclusive {
+                            self.handle_browse_enter()?;
+                            return Ok(());
+                        }
                         let line_to_submit = if let Some(idxs) = palette.as_ref() {
                             if let Some(si) = self.list_state.selected() {
                                 if let Some(&ci) = idxs.get(si) {
@@ -420,8 +622,36 @@ impl App {
                         let effect = apply_submit(self, &line_to_submit);
                         self.input.reset();
                         self.list_state.select(None);
+
+                        if let SubmitEffect::Browse { access_token } = &effect {
+                            let credentials_note = authdog_cli::session_store::credentials_path()
+                                .ok()
+                                .map(|path| format!("credentials file: {}", path.display()));
+                            match crate::browse::BrowseSession::begin(
+                                access_token.clone(),
+                                credentials_note,
+                            ) {
+                                Ok(sess) => {
+                                    self.browse = Some(sess);
+                                    self.browse_list_state.select(Some(0));
+                                    self.sync_browse_list_selection();
+                                }
+                                Err(err) => {
+                                    self.status =
+                                        Some(format!("Browse could not load listings:\n{err:#}"));
+                                    self.status_err = true;
+                                }
+                            }
+                        }
+
                         self.handle_submit_followup(term, effect)?;
                         return Ok(());
+                    }
+                    KeyCode::Down if browse_exclusive => {
+                        self.browse_list_state.select_next();
+                    }
+                    KeyCode::Up if browse_exclusive => {
+                        self.browse_list_state.select_previous();
                     }
                     KeyCode::Down if palette.as_ref().is_some_and(|v| !v.is_empty()) => {
                         self.list_state.select_next();
@@ -451,7 +681,8 @@ impl App {
                     }
                     KeyCode::PageUp
                         if self.status.is_some()
-                            && palette.as_ref().is_none_or(|v| v.is_empty()) =>
+                            && palette.as_ref().is_none_or(|v| v.is_empty())
+                            && self.browse.is_none() =>
                     {
                         let step = if self.last_status_viewport_h > 0 {
                             self.last_status_viewport_h
@@ -463,7 +694,8 @@ impl App {
                     }
                     KeyCode::PageDown
                         if self.status.is_some()
-                            && palette.as_ref().is_none_or(|v| v.is_empty()) =>
+                            && palette.as_ref().is_none_or(|v| v.is_empty())
+                            && self.browse.is_none() =>
                     {
                         let step = if self.last_status_viewport_h > 0 {
                             self.last_status_viewport_h
@@ -478,14 +710,16 @@ impl App {
                     }
                     KeyCode::Home
                         if self.status.is_some()
-                            && palette.as_ref().is_none_or(|v| v.is_empty()) =>
+                            && palette.as_ref().is_none_or(|v| v.is_empty())
+                            && self.browse.is_none() =>
                     {
                         self.status_scroll_row = 0;
                         return Ok(());
                     }
                     KeyCode::End
                         if self.status.is_some()
-                            && palette.as_ref().is_none_or(|v| v.is_empty()) =>
+                            && palette.as_ref().is_none_or(|v| v.is_empty())
+                            && self.browse.is_none() =>
                     {
                         self.status_scroll_row = self.last_status_scroll_row_max;
                         return Ok(());
@@ -493,7 +727,9 @@ impl App {
                     _ => {}
                 }
 
-                let _ = self.input.handle_event(&ev);
+                if !browse_exclusive {
+                    let _ = self.input.handle_event(&ev);
+                }
             }
             _ => {}
         }
@@ -505,7 +741,7 @@ impl App {
         term: &mut DefaultTerminal,
         effect: SubmitEffect,
     ) -> Result<()> {
-        if effect != SubmitEffect::BrowserLogin {
+        if !matches!(effect, SubmitEffect::BrowserLogin) {
             return Ok(());
         }
         cli_login::suspend_tui_for_shell_io()?;
@@ -533,6 +769,68 @@ impl App {
         }
         Ok(())
     }
+}
+
+fn browse_block_title(session: &BrowseSession) -> Line<'static> {
+    match &session.step {
+        BrowseStep::PickOrganization => Line::from(vec![
+            Span::styled("Organizations", Style::default().fg(TXT).bold()),
+            Span::styled(
+                format!(" · pick one ({})", session.organizations.len()),
+                TXT_DIM,
+            ),
+        ]),
+        BrowseStep::PickTenant {
+            org_summary,
+            tenants,
+        } => Line::from(vec![
+            Span::styled("Tenants · ", Style::default().fg(TXT).bold()),
+            Span::styled(
+                truncate_vis(org_summary.as_str(), 44),
+                Style::default().fg(TXT),
+            ),
+            Span::styled(format!(" · {} rows", tenants.len()), TXT_DIM),
+        ]),
+    }
+}
+
+fn browse_org_line(o: &OrgRow, vw: usize) -> Line<'static> {
+    let prim = o.display_primary();
+    let label = if prim.as_str() == o.id.as_str() {
+        o.id.clone()
+    } else {
+        format!(
+            "{prim}  ·  {}",
+            truncate_vis(
+                o.id.as_str(),
+                vw.saturating_sub(prim.width().saturating_add(5)),
+            )
+        )
+    };
+    Line::from(Span::styled(
+        truncate_vis(&label, vw),
+        Style::default().fg(TXT).bold(),
+    ))
+}
+
+fn browse_tenant_line(t: &TenantRow, vw: usize) -> Line<'static> {
+    let label = if let Some(ref n) = t.name {
+        let n = n.trim();
+        if n.is_empty() {
+            t.id.clone()
+        } else {
+            format!(
+                "{n}  ·  {}",
+                truncate_vis(t.id.as_str(), vw.saturating_sub(n.width() + 5))
+            )
+        }
+    } else {
+        t.id.clone()
+    };
+    Line::from(Span::styled(
+        truncate_vis(&label, vw),
+        Style::default().fg(TXT),
+    ))
 }
 
 fn ansi_shadow_figlet() -> Option<&'static FIGlet> {

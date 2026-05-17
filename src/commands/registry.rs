@@ -35,6 +35,10 @@ pub const CMDS: &[SlashCmd] = &[
         desc: "Projects for current tenant (/v1/tenants/{id}/projects)",
     },
     SlashCmd {
+        name: "browse",
+        desc: "Pick org · tenant · projects (↑↓ Enter Esc)",
+    },
+    SlashCmd {
         name: "organizations",
         desc: "Organizations (/v1/organizations; alias /orgs)",
     },

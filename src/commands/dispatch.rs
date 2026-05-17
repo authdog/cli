@@ -12,10 +12,14 @@ use authdog_cli::whoami;
 use std::cmp;
 use uuid::Uuid;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum SubmitEffect {
     None,
     BrowserLogin,
+    /// Start interactive org → tenant → projects flow (handled in `app`).
+    Browse {
+        access_token: String,
+    },
 }
 
 pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
@@ -245,6 +249,28 @@ pub fn apply_submit(app: &mut App, line: &str) -> SubmitEffect {
                 app.status = Some(
                     "Not logged in (/projects).\nTry /login, or use /status to confirm files."
                         .into(),
+                );
+                app.status_err = false;
+                SubmitEffect::None
+            }
+            Err(err) => {
+                app.status = Some(format!("{err:#}"));
+                app.status_err = true;
+                SubmitEffect::None
+            }
+        },
+        "browse" | "navigator" => match session_store::load_session() {
+            Ok(Some(s)) => {
+                app.status_clear_at = None;
+                app.status = None;
+                app.status_err = false;
+                SubmitEffect::Browse {
+                    access_token: s.access_token,
+                }
+            }
+            Ok(None) => {
+                app.status = Some(
+                    "Not logged in (/browse).\nTry /login, or use /status to confirm files.".into(),
                 );
                 app.status_err = false;
                 SubmitEffect::None

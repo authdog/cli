@@ -7,6 +7,124 @@ use std::time::Duration;
 
 const TENANTS_PATH: &str = "/v1/tenants";
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TenantRow {
+    pub id: String,
+    pub name: Option<String>,
+    pub organization_id: Option<String>,
+}
+
+impl TenantRow {
+    pub fn sort_key(&self) -> (String, String) {
+        let n = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        (n, self.id.clone())
+    }
+}
+
+fn tenant_org_id_hint(item: &Value) -> Option<String> {
+    for key in [
+        "organization_id",
+        "organizationId",
+        "org_id",
+        "organizationUUID",
+        "organizationUuid",
+    ] {
+        if let Some(v) = item.get(key).and_then(|x| x.as_str()) {
+            let t = v.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    item.get("organization")
+        .and_then(|o| o.get("id"))
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+fn tenant_name_hint(item: &Value) -> Option<String> {
+    for key in ["name", "title", "displayName", "display_name"] {
+        if let Some(v) = item.get(key).and_then(|x| x.as_str()) {
+            let t = v.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Tenant rows extracted from **`GET /v1/tenants`** JSON (`tenants` array or JSON array root).
+pub fn tenant_rows_from_body(body: &Value) -> Vec<TenantRow> {
+    let arrays: &[&[Value]] = if let Some(a) = body.get("tenants").and_then(|v| v.as_array()) {
+        &[a.as_slice()]
+    } else if let Some(a) = body.as_array() {
+        &[a.as_slice()]
+    } else {
+        &[]
+    };
+    let mut out: Vec<TenantRow> = Vec::new();
+    for arr in arrays {
+        for item in *arr {
+            let Some(id) = item.get("id").and_then(|x| x.as_str()).map(str::trim) else {
+                continue;
+            };
+            if id.is_empty() {
+                continue;
+            }
+            let name = tenant_name_hint(item);
+            let organization_id = tenant_org_id_hint(item);
+            out.push(TenantRow {
+                id: id.to_string(),
+                name,
+                organization_id,
+            });
+        }
+    }
+    out.sort_by_key(|r| r.sort_key());
+    out.dedup_by(|a, b| a.id == b.id);
+    out
+}
+
+/// If any tenant declares an owning organization id, restrict to **`org_id`**. Otherwise returns full list.
+///
+/// When filtering finds no rows but **`all`** non-empty (schema mismatch upstream), callers may widen with the message.
+pub fn filter_tenants_for_organization(
+    all: &[TenantRow],
+    org_id: &str,
+) -> (Vec<TenantRow>, Option<String>) {
+    if org_id.is_empty() || all.is_empty() {
+        return (all.to_vec(), None);
+    }
+    let linked = all.iter().any(|t| t.organization_id.is_some());
+    if !linked {
+        return (all.to_vec(), None);
+    }
+    let matched: Vec<TenantRow> = all
+        .iter()
+        .filter(|t| t.organization_id.as_deref() == Some(org_id))
+        .cloned()
+        .collect();
+    if matched.is_empty() && !all.is_empty() {
+        (
+            all.to_vec(),
+            Some(format!(
+                "No `/v1/tenants` rows reference organization `{org_id}`; showing every tenant."
+            )),
+        )
+    } else {
+        (matched, None)
+    }
+}
+
 fn summarize_body_preview(body: &str, max: usize) -> String {
     if body.len() <= max {
         return body.to_string();
@@ -144,6 +262,64 @@ mod tests {
             tenant_ids_from_body(&v),
             vec!["a".to_string(), "b".to_string()]
         );
+    }
+
+    #[test]
+    fn tenant_rows_and_org_filter_helpers() {
+        let v: Value = serde_json::from_str(
+            r#"{"tenants":[
+               {"id":"t1","name":"Alpha","organizationId":"org-a"},
+               {"id":"t2","organization_id":"org-b"}
+            ]}"#,
+        )
+        .unwrap();
+        let rows = tenant_rows_from_body(&v);
+        assert_eq!(rows.len(), 2);
+        let t1 = rows.iter().find(|r| r.id == "t1").unwrap();
+        let t2 = rows.iter().find(|r| r.id == "t2").unwrap();
+        assert_eq!(t1.organization_id.as_deref(), Some("org-a"));
+        assert_eq!(t2.organization_id.as_deref(), Some("org-b"));
+
+        let (m, _) = filter_tenants_for_organization(&rows, "org-a");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].id, "t1");
+    }
+
+    #[test]
+    fn filter_without_org_links_returns_everyone() {
+        let rows = vec![
+            TenantRow {
+                id: "a".into(),
+                name: None,
+                organization_id: None,
+            },
+            TenantRow {
+                id: "b".into(),
+                name: None,
+                organization_id: None,
+            },
+        ];
+        let (all, _) = filter_tenants_for_organization(&rows, "anything");
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn filter_no_match_fallback_lists_all_and_warns() {
+        let rows = vec![
+            TenantRow {
+                id: "a".into(),
+                name: None,
+                organization_id: Some("org-1".into()),
+            },
+            TenantRow {
+                id: "b".into(),
+                name: None,
+                organization_id: Some("org-2".into()),
+            },
+        ];
+        let (wide, hint) = filter_tenants_for_organization(&rows, "missing-org");
+        assert_eq!(wide.len(), 2);
+        assert!(hint.unwrap().contains("missing-org"));
     }
 
     #[test]

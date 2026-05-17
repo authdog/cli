@@ -1,6 +1,7 @@
 //! Authdog CLI — full-screen Ratatui (Crossterm) interface.
 
 mod app;
+mod browse;
 mod commands;
 mod tui_output;
 
