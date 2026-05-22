@@ -2,7 +2,19 @@
 
 Interactive terminal CLI for **[Authdog](https://www.authdog.com)** session flows: OAuth sign-in in the browser with a localhost callback, session storage on disk, and helpers against the Identity / Management-backed REST API (`whoami`, tenants, organizations, tenant-scoped projects, JWT claim preview). Use **`/browse`** for an org → tenant → projects picker without typing UUIDs.
 
-## Requirements
+## Installation
+
+Install a prebuilt binary from **[cli.auth.dog](https://cli.auth.dog)** (picked for your OS/arch from GitHub Releases):
+
+```bash
+curl https://cli.auth.dog/install -fsS | bash
+```
+
+Ensure **`$HOME/.local/bin`** (or your **`INSTALL_DIR`**) is on **`PATH`**—the installer defaults there. Options such as **`AUTHDOG_CLI_VERSION`**, **`INSTALL_DIR`**, and Linux musl are documented in **[`install/SPEC.md`](install/SPEC.md)**. Windows installers: **`install.ps1`** at the same host (see SPEC).
+
+Maintainers deploy the Worker from **`install/`** via **[`.github/workflows/cli-install-deploy.yml`](.github/workflows/cli-install-deploy.yml)**; routing and **`wrangler.toml`** vars are covered in SPEC.
+
+## Requirements (build from source)
 
 - **Rust toolchain** stable (Edition 2021), `cargo`.
 - Unix-like environment with a usable terminal (**Ratatui** over **crossterm**).
@@ -15,10 +27,6 @@ Optional:
 ## GitHub Releases
 
 When a tag like **`0.1.0`** or **`0.1.0-beta.1`** (bare semver — **no** leading **`v`**) is pushed to **`origin`** on GitHub, the **Release** workflow (`.github/workflows/release.yml`) cross-builds **`authdog-cli`**, attaches archives + **`checksums.sha256`**, and creates/updates that tag’s **[GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)**. Use **`make tag-push`** (or Actions **Create release tag**) so the tag matches `./Cargo.toml` `[package].version` and the **`[package.metadata.authdog-release]`** rules. Failed runs can be retried from the Actions UI (**Run workflow** with the existing tag).
-
-## HTTPS install Worker
-
-Prebuilt binaries can be installed via the Cloudflare Worker in **`install/`** (example: **`curl -fsSL https://cli.auth.dog/install | bash`** once routed). CI deploy: **`.github/workflows/cli-install-deploy.yml`**. Routes, env vars, and deployment steps are documented in **`install/SPEC.md`**.
 
 ## Build & run
 
