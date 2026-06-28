@@ -22,7 +22,7 @@ Maintainers deploy the Worker from **`install/`** via **[`.github/workflows/cli-
 Optional:
 
 - **`wasm32-unknown-unknown`** target for `make wasm` (installed automatically via `rustup` in the Makefile step).
-- **Bazelisk** or `bazel` on PATH for `make bazel-build` / `make bazel-test` (version pinned in **`.bazelversion`**).
+- **[moon](https://moonrepo.dev)** on PATH for `make moon-build` / `make moon-test`.
 
 ## GitHub Releases
 
@@ -74,8 +74,8 @@ cargo run               # launches the fullscreen TUI
 | **`make wasm`** | Release build of **`authdog-cli-wasm`** → `target/wasm32-unknown-unknown/release/authdog_cli_wasm.wasm` |
 | **`make tenants`** | `cargo test -p authdog-cli tenants` (substring filter: tenants-focused tests) |
 | **`make projects`** | `cargo test -p authdog-cli projects` (substring filter: projects-focused tests) |
-| **`make bazel-build`** | `bazel build //:authdog-cli` |
-| **`make bazel-test`** | `bazel test //:authdog_cli_lib_test` |
+| **`make moon-build`** | `moon run authdog-cli:build` (release build of the desktop CLI) |
+| **`make moon-test`** | `moon run authdog-cli:test` (library unit tests) |
 | `make clean` | `cargo clean` |
 
 ## Workspace layout

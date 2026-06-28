@@ -1,4 +1,4 @@
-.PHONY: all build release release-tag tag tag-push run clean check fmt clippy test wasm tenants projects bazel-build bazel-test
+.PHONY: all build release release-tag tag tag-push run clean check fmt clippy test wasm tenants projects moon-build moon-test
 
 MKROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 # When tagging locally, refresh remote tags before computing the next `-beta.{n}` (set to 0 to stay offline-only).
@@ -61,10 +61,10 @@ projects:
 clean:
 	cargo clean
 
-## Hermetic build via Bazel (requires Bazelisk or `bazel` on PATH; see `.bazelversion`).
-bazel-build:
-	bazel build //:authdog-cli
+## Build the desktop CLI via moon (requires `moon` on PATH; see https://moonrepo.dev).
+moon-build:
+	moon run authdog-cli:build
 
-## Library unit tests under Bazel (`src/tui_output.rs` tests stay on `cargo test` only).
-bazel-test:
-	bazel test //:authdog_cli_lib_test
+## Library unit tests via moon (`src/tui_output.rs` tests stay on `cargo test` only).
+moon-test:
+	moon run authdog-cli:test

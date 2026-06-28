@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/workspace.json
+$schema: 'https://moonrepo.dev/schemas/workspace.json'
+
+# Projects mirror the Cargo workspace members (see ./Cargo.toml).
+projects:
+  authdog-cli: '.'
+  authdog-cli-wasm: 'wasm'
+
+vcs:
+  client: 'git'
+  defaultBranch: 'main'

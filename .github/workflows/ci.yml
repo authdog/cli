@@ -57,32 +57,21 @@ jobs:
       - name: Cargo test
         run: cargo test --locked --verbose --all-targets
 
-  bazel:
-    name: Bazel build + test
+  moon:
+    name: moon build + test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      # Restore/save repo + disk + external caches keyed by lockfiles/manifests; see
-      # https://github.com/bazel-contrib/setup-bazel/blob/main/README.md
-      - uses: bazel-contrib/setup-bazel@0.19.0
-        with:
-          bazelisk-cache: true
-          # Bump when deliberately invalidating CI cache (rules upgrade, breakage, …).
-          cache-version: '1'
-          disk-cache: ${{ github.workflow }}
-          repository-cache: |
-            - MODULE.bazel
-            - MODULE.bazel.lock
-            - Cargo.toml
-            - Cargo.lock
-          # rules_rust + downloaded toolchains/archives often land in externals (>10MiB).
-          external-cache: true
-          # PRs consume default-branch caches but avoid writing polluted keys back.
-          cache-save: ${{ github.event_name != 'pull_request' }}
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Bazel build (desktop CLI)
-        run: bazel build //:authdog-cli
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Bazel test (library unit tests)
-        run: bazel test //:authdog_cli_lib_test
+      - name: Install moon
+        uses: dbrrt/setup-moon@v1.0.0
+
+      - name: moon build (desktop CLI)
+        run: moon run authdog-cli:build
+
+      - name: moon test (library unit tests)
+        run: moon run authdog-cli:test

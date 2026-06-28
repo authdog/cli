@@ -1,9 +1,0 @@
-###############################################################################
-# Workspace-local symlink outputs under ./bazel-*; caches live under ~/.cache
-# so the repository tree is clean and Bazel does not complain about nested
-# repository_cache contents inside the workspace.
-###############################################################################
-common --repository_cache=~/.cache/bazel/authdog-cli/repo
-common --disk_cache=~/.cache/bazel/authdog-cli/disk
-
-build --sandbox_default_allow_network=false
