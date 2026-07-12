@@ -1,9 +1,6 @@
 //! Authdog CLI — conventional commands plus an optional fullscreen interface.
 
-mod app;
-mod browse;
-mod commands;
-mod tui_output;
+mod dashboard;
 
 use anyhow::Result;
 use authdog_cli::cli::{self, Cli, RunAction};
@@ -24,7 +21,7 @@ fn run_ui() -> Result<()> {
         eprintln!("note: mouse/wheel scrolling unavailable ({e})");
     }
 
-    let run_res = app::App::default().run(&mut terminal);
+    let run_res = dashboard::App::new().run(&mut terminal);
 
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();

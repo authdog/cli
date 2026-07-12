@@ -141,19 +141,16 @@ pub fn list_environments(
         "project",
         "--project",
     )?;
-    Ok(environment_rows_from_body(
-        &fetch_application_environments(&session.access_token, tenant, project)?,
-    ))
+    Ok(environment_rows_from_body(&fetch_application_environments(
+        &session.access_token,
+        tenant,
+        project,
+    )?))
 }
 
-pub fn list_resources(
-    resource: ContextResource,
-    scopes: &ListScopes,
-) -> Result<ResourceRows> {
+pub fn list_resources(resource: ContextResource, scopes: &ListScopes) -> Result<ResourceRows> {
     match resource {
-        ContextResource::Organization => {
-            Ok(ResourceRows::Organizations(list_organizations()?))
-        }
+        ContextResource::Organization => Ok(ResourceRows::Organizations(list_organizations()?)),
         ContextResource::Tenant => Ok(ResourceRows::Tenants(list_tenants(
             scopes.organization.as_deref(),
         )?)),
@@ -214,7 +211,10 @@ mod tests {
             ContextResource::Organization.descendants(),
             "tenant, project, and environment"
         );
-        assert_eq!(ContextResource::Environment.descendants(), "no other context");
+        assert_eq!(
+            ContextResource::Environment.descendants(),
+            "no other context"
+        );
     }
 
     #[test]
