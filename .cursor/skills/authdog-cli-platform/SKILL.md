@@ -3,7 +3,7 @@ name: authdog-cli-platform
 description: >-
   Authdog CLI and hosted API context (REST origins, OAuth, env vars, code maps).
   Use when changing authdog-cli, /v1/userinfo or /v1/tenants, Identity sign-in or
-  redeem URLs, WASM build, Makefile targets, or when the user mentions Authdog API
+  redeem URLs, WASM build, just recipes, or when the user mentions Authdog API
   location, AUTHDOG_* env vars, Management GraphQL backing the API worker,
   oauth callback, tenants list, or whoami.
 disable-model-invocation: true
@@ -55,10 +55,10 @@ Extend **reference.md** only when more tables or troubleshooting steps are neede
 
 - Crate **`wasm/`** (**`authdog-cli-wasm`**) **`cdylib`** + **`wasm-bindgen`**; depends on **`authdog-cli`** with **`default-features = false`** (JWT/helpers only—no OAuth/TUI).
 
-## Makefile (repo root)
+## justfile (repo root)
 
-- **`make wasm`**: WASM release artefact **`target/wasm32-unknown-unknown/release/authdog_cli_wasm.wasm`**
-- **`make tenants`**: `cargo test … tenants`-filtered subset
+- **`just wasm`**: WASM release artefact **`target/wasm32-unknown-unknown/release/authdog_cli_wasm.wasm`**
+- **`just tenants`**: `cargo test … tenants`-filtered subset
 
 ## Quick edit map
 

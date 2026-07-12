@@ -21,12 +21,13 @@ Maintainers deploy the Worker from **`install/`** via **[`.github/workflows/cli-
 
 Optional:
 
-- **`wasm32-unknown-unknown`** target for `make wasm` (installed automatically via `rustup` in the Makefile step).
-- **[moon](https://moonrepo.dev)** on PATH for `make moon-build` / `make moon-test`.
+- **[just](https://just.systems)** for repository recipes.
+- **`wasm32-unknown-unknown`** target for `just wasm` (installed automatically via `rustup` by the recipe).
+- **[moon](https://moonrepo.dev)** on PATH for `just moon-build` / `just moon-test`.
 
 ## GitHub Releases
 
-When a tag like **`0.1.0`** or **`0.1.0-beta.1`** (bare semver — **no** leading **`v`**) is pushed to **`origin`** on GitHub, the **Release** workflow (`.github/workflows/release.yml`) cross-builds **`authdog`**, attaches `authdog-cli-<version>-<target>` archives + **`checksums.sha256`**, and creates/updates that tag’s **[GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)**. Archives include **`authdog`** and a one-release **`authdog-cli`** compatibility copy. Use **`make tag-push`** (or Actions **Create release tag**) so the tag matches `./Cargo.toml` `[package].version` and the **`[package.metadata.authdog-release]`** rules.
+When a tag like **`0.1.0`** or **`0.1.0-beta.1`** (bare semver — **no** leading **`v`**) is pushed to **`origin`** on GitHub, the **Release** workflow (`.github/workflows/release.yml`) cross-builds **`authdog`**, attaches `authdog-cli-<version>-<target>` archives + **`checksums.sha256`**, and creates/updates that tag’s **[GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)**. Archives include **`authdog`** and a one-release **`authdog-cli`** compatibility copy. Use **`just tag-push`** (or Actions **Create release tag**) so the tag matches `./Cargo.toml` `[package].version` and the **`[package.metadata.authdog-release]`** rules.
 
 ## Build & run
 
@@ -92,23 +93,23 @@ Run **`authdog ui`** to use the original Ratatui interface. Its slash commands r
 | `AUTHDOG_API_ORIGIN` | REST API origin for `/v1/userinfo`, `/v1/tenants`, `/v1/tenants/{id}/projects`, `/v1/organizations` (default **`https://api.authdog.com`**) |
 | `AUTHDOG_CONFIG_DIR` | Optional config-directory override; default remains the OS-specific `authdog-cli` directory |
 
-## Makefile targets
+## Just recipes
 
-| Target | Description |
+| Recipe | Description |
 |--------|-------------|
-| `make` / `make build` | `cargo build` |
-| `make release` | `cargo build --release` |
-| `make run` | `cargo run` (optional `ARGS=…`) |
-| `make check` | `cargo check` |
-| `make test` | `cargo test` |
-| `make clippy` | `cargo clippy --all-targets` |
-| `make fmt` | `cargo fmt` |
-| **`make wasm`** | Release build of **`authdog-cli-wasm`** → `target/wasm32-unknown-unknown/release/authdog_cli_wasm.wasm` |
-| **`make tenants`** | `cargo test -p authdog-cli tenants` (substring filter: tenants-focused tests) |
-| **`make projects`** | `cargo test -p authdog-cli projects` (substring filter: projects-focused tests) |
-| **`make moon-build`** | `moon run authdog-cli:build` (release build of the desktop CLI) |
-| **`make moon-test`** | `moon run authdog-cli:test` (library unit tests) |
-| `make clean` | `cargo clean` |
+| `just` / `just build` | `cargo build` |
+| `just release` | `cargo build --release` |
+| `just run [ARGS]…` | `cargo run` with optional arguments |
+| `just check` | `cargo check` |
+| `just test` | `cargo test` |
+| `just clippy` | `cargo clippy --all-targets` |
+| `just fmt` | `cargo fmt` |
+| **`just wasm`** | Release build of **`authdog-cli-wasm`** → `target/wasm32-unknown-unknown/release/authdog_cli_wasm.wasm` |
+| **`just tenants`** | `cargo test -p authdog-cli tenants` (substring filter: tenants-focused tests) |
+| **`just projects`** | `cargo test -p authdog-cli projects` (substring filter: projects-focused tests) |
+| **`just moon-build`** | `moon run authdog-cli:build` (release build of the desktop CLI) |
+| **`just moon-test`** | `moon run authdog-cli:test` (library unit tests) |
+| `just clean` | `cargo clean` |
 
 ## Workspace layout
 
@@ -117,7 +118,7 @@ Run **`authdog ui`** to use the original Ratatui interface. Its slash commands r
 
 The desktop feature pulls Ratatui, Crossterm, blocking `reqwest`, OAuth loopback TCP, filesystem session store, etc. The WASM package depends on **`authdog-cli` with `default-features = false`**.
 
-## Wasm (`make wasm`)
+## Wasm (`just wasm`)
 
 The WASM artefact exposes **JWT payload inspection helpers** (**signatures not verified**, same caveat as CLI claim previews). Use **`wasm-pack build`** inside `wasm/` if you want generated JS bindings for the browser.
 

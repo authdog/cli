@@ -11,8 +11,7 @@ tasks:
     options:
       cache: false
 
-  # Equivalent of the former `bazel test //:authdog_cli_lib_test`: library unit
-  # tests (`src/tui_output.rs` tests stay on `cargo test` only).
+  # Run library unit tests (`src/tui_output.rs` tests stay on `cargo test` only).
   test:
     command: 'cargo test --lib'
     options:

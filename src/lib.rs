@@ -3,6 +3,8 @@
 pub mod whoami;
 
 #[cfg(feature = "desktop")]
+pub mod actions;
+#[cfg(feature = "desktop")]
 pub mod cli;
 #[cfg(feature = "desktop")]
 pub mod cli_login;

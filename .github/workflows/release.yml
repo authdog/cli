@@ -1,7 +1,7 @@
 name: Release
 
 # Multi-platform binaries + GitHub Release for version tags pushed to GitHub (e.g. `git push origin 0.1.0`).
-# Tag format follows `Makefile tag-push` / "Create release tag" workflow (`X.Y.Z` or `X.Y.Z-beta.<n>`; no leading `v`).
+# Tag format follows `just tag-push` / "Create release tag" workflow (`X.Y.Z` or `X.Y.Z-beta.<n>`; no leading `v`).
 # Manual re-run from the Actions tab for an existing tag: workflow_dispatch with the same tag name.
 
 on:

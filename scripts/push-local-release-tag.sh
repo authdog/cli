@@ -10,7 +10,7 @@ export RELEASE_FETCH_TAGS="${RELEASE_FETCH_TAGS:-1}"
 TAG=$(python3 "$SCRIPT_DIR/compute_release_tag.py")
 
 if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-  printf '%s\n' "Missing local tag ${TAG}; run \"make tag\" first." >&2
+  printf '%s\n' "Missing local tag ${TAG}; run \"just tag\" first." >&2
   exit 1
 fi
 

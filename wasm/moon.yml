@@ -5,7 +5,7 @@ layer: 'library'
 language: 'rust'
 
 tasks:
-  # Embeddable wasm-bindgen artifact (JWT helpers only — mirrors `make wasm`).
+  # Embeddable wasm-bindgen artifact (JWT helpers only — mirrors `just wasm`).
   build:
     command: 'cargo build -p authdog-cli-wasm --release --target wasm32-unknown-unknown'
     options:

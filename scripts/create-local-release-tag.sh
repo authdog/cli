@@ -15,4 +15,4 @@ if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
 fi
 
 git tag -a "${TAG}" -m "Release ${TAG}"
-printf '%s\n' "Created tag ${TAG}. Push with: make tag-push (or: git push origin ${TAG})."
+printf '%s\n' "Created tag ${TAG}. Push with: just tag-push (or: git push origin ${TAG})."
