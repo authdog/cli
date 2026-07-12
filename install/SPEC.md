@@ -1,6 +1,6 @@
 # CLI install Worker (`cli.auth.dog`)
 
-Cloudflare Worker that serves installers and resolves GitHub Release download URLs for **`authdog-cli`** (see `.github/workflows/release.yml` archive naming).
+Cloudflare Worker that serves installers for **`authdog`** and resolves GitHub Release assets using the retained **`authdog-cli`** archive prefix.
 
 ## Deploy
 
@@ -27,7 +27,7 @@ Attach routes so **`https://cli.auth.dog`** (or another hostname) invokes this W
 | Variable       | Purpose                                      |
 |----------------|----------------------------------------------|
 | `GITHUB_REPO`  | `owner/name` on GitHub (default `authdog/cli`) |
-| `BIN_NAME`     | Binary/archive prefix (default `authdog-cli`) |
+| `BIN_NAME`     | Release archive prefix (default `authdog-cli`) |
 
 No secrets required for public repos.
 
@@ -63,5 +63,5 @@ Worker uses **`fetch`** to **`https://api.github.com`** with `User-Agent: cli-in
 
 ## Install scripts (behaviour summary)
 
-- **POSIX (`/install`)**: Chooses triple from `uname`; optional **`AUTHDOG_CLI_USE_MUSL=1`** on Linux x86_64/aarch64; optional **`AUTHDOG_CLI_VERSION`**; installs to **`INSTALL_DIR`** or **`$HOME/.local/bin`**.
-- **Windows (`/install.ps1`)**: **`x86_64-pc-windows-msvc`** zip; optional **`AUTHDOG_CLI_VERSION`**, **`INSTALL_DIR`** (default under `%LOCALAPPDATA%\Programs\authdog-cli`).
+- **POSIX (`/install`)**: Chooses triple from `uname`; optional **`AUTHDOG_CLI_USE_MUSL=1`** on Linux x86_64/aarch64; optional **`AUTHDOG_CLI_VERSION`**; installs **`authdog`** plus one-release **`authdog-cli`** compatibility copy to **`INSTALL_DIR`** or **`$HOME/.local/bin`**. Accepts old archives containing only `authdog-cli`.
+- **Windows (`/install.ps1`)**: **`x86_64-pc-windows-msvc`** zip; optional **`AUTHDOG_CLI_VERSION`**, **`INSTALL_DIR`** (default under `%LOCALAPPDATA%\Programs\authdog`); installs both command names and accepts old archive contents.

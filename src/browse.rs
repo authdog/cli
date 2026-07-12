@@ -80,14 +80,16 @@ fn project_heading(p: &ProjectRow) -> String {
     format!("{prim}   {}", p.id)
 }
 
-fn extract_environment_object(response: &Value, index: usize) -> Result<Value> {
+fn extract_environment_object(response: &Value, environment_id: &str) -> Result<Value> {
     let arr = response
         .get("environments")
         .and_then(|v| v.as_array())
+        .or_else(|| response.as_array())
         .context("environments array missing in API response")?;
-    arr.get(index)
+    arr.iter()
+        .find(|item| item.get("id").and_then(Value::as_str) == Some(environment_id))
         .cloned()
-        .context("environment index out of range")
+        .with_context(|| format!("environment `{environment_id}` missing in API response"))
 }
 
 impl BrowseSession {
@@ -235,7 +237,7 @@ impl BrowseSession {
         let row = environments
             .get(environment_index)
             .context("environment index")?;
-        let detail = extract_environment_object(env_response, environment_index)?;
+        let detail = extract_environment_object(env_response, &row.id)?;
 
         session_store::set_current_application_id(Some(application_id.clone()))?;
         session_store::set_current_environment_id(Some(row.id.clone()))?;
@@ -293,5 +295,23 @@ impl BrowseSession {
             }
             BrowseStep::PickOrganization => BrowsePopOutcome::ExitedBrowse,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn environment_snapshot_is_selected_by_id_after_sorting() {
+        let response = serde_json::json!({
+            "environments": [
+                { "id": "env-z", "name": "Zebra" },
+                { "id": "env-a", "name": "Alpha" }
+            ]
+        });
+
+        let selected = extract_environment_object(&response, "env-a").unwrap();
+        assert_eq!(selected["name"], "Alpha");
     }
 }

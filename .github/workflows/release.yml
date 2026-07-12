@@ -25,7 +25,8 @@ permissions:
   contents: write
 
 env:
-  BIN_NAME: authdog-cli
+  ASSET_PREFIX: authdog-cli
+  CARGO_BIN_NAME: authdog
   CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -118,21 +119,35 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          declare -r BIN="${BIN_NAME}"
+          declare -r BIN="${CARGO_BIN_NAME}"
+          declare -r PREFIX="${ASSET_PREFIX}"
           declare -r ver="${VERSION}"
           declare -r tgt="${TARGET}"
           Os="${RUNNER_OS}"
           exe="target/${tgt}/release/${BIN}"
           if [[ "${Os}" == "Windows" ]]; then exe="${exe}.exe"; fi
           echo "Packaging $(ls -la "${exe}")"
+          stage="dist/package"
+          mkdir -p "${stage}"
           if [[ "${Os}" == "Windows" ]]; then
-            outfile="${BIN}-${ver}-${tgt}.zip"
+            cp "${exe}" "${stage}/authdog.exe"
+            cp "${exe}" "${stage}/authdog-cli.exe"
+            outfile="${PREFIX}-${ver}-${tgt}.zip"
             # Relative archive path: GNU tar mis-reads D:\... as remote host "D".
-            tar.exe -acf "dist/${outfile}" -C "$(dirname "${exe}")" "$(basename "${exe}")"
+            tar.exe -acf "dist/${outfile}" -C "${stage}" authdog.exe authdog-cli.exe
+            tar.exe -tf "dist/${outfile}" | tee dist/archive-contents.txt
+            grep -Fx authdog.exe dist/archive-contents.txt
+            grep -Fx authdog-cli.exe dist/archive-contents.txt
           else
-            outfile="${BIN}-${ver}-${tgt}.tar.gz"
-            tar czf "dist/${outfile}" -C "$(dirname "${exe}")" "$(basename "${exe}")"
+            cp "${exe}" "${stage}/authdog"
+            cp "${exe}" "${stage}/authdog-cli"
+            outfile="${PREFIX}-${ver}-${tgt}.tar.gz"
+            tar czf "dist/${outfile}" -C "${stage}" authdog authdog-cli
+            tar tzf "dist/${outfile}" | tee dist/archive-contents.txt
+            grep -Fx authdog dist/archive-contents.txt
+            grep -Fx authdog-cli dist/archive-contents.txt
           fi
+          rm -rf "${stage}" dist/archive-contents.txt
 
       - uses: actions/upload-artifact@v6
         with:

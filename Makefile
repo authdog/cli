@@ -23,7 +23,7 @@ tag:
 tag-push:
 	@RELEASE_FETCH_TAGS="$(RELEASE_FETCH_TAGS)" "$(MKROOT)/scripts/push-local-release-tag.sh"
 
-# Usage: make run ARGS='--whatever'
+# Usage: make run ARGS='status --json' or make run ARGS='ui'
 ARGS ?=
 run:
 	cargo run -- $(ARGS)

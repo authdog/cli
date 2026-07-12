@@ -1,5 +1,5 @@
 /**
- * Install helper Worker: resolves GitHub Release assets for `authdog-cli` and serves installer scripts.
+ * Install helper Worker: resolves Authdog CLI release assets and serves installer scripts.
  */
 
 export interface Env {
@@ -138,7 +138,7 @@ function json(obj: unknown, status = 200): Response {
 
 function usage(origin: string): Response {
   const lines = [
-    'authdog-cli install worker',
+    'Authdog CLI install worker',
     '',
     'Linux / macOS:',
     `  curl -fsSL ${origin}/install | bash`,
@@ -240,7 +240,7 @@ cleanup() {
 trap cleanup EXIT
 
 URL="$(curl -fsSL "$BASE/v1/binary-url?$QUERY")"
-ARCHIVE="$TMP/authdog-cli-download"
+ARCHIVE="$TMP/authdog-download"
 curl -fsSL "$URL" -o "$ARCHIVE"
 
 case "$URL" in
@@ -258,9 +258,19 @@ esac
 
 DEST="\${INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$DEST"
-install -m 0755 "$TMP/authdog-cli" "$DEST/authdog-cli"
+SOURCE="$TMP/authdog"
+if [ ! -f "$SOURCE" ]; then
+  SOURCE="$TMP/authdog-cli"
+fi
+if [ ! -f "$SOURCE" ]; then
+  echo "Release archive contains neither authdog nor authdog-cli" >&2
+  exit 1
+fi
+install -m 0755 "$SOURCE" "$DEST/authdog"
+install -m 0755 "$SOURCE" "$DEST/authdog-cli"
 
-echo "Installed authdog-cli → $DEST/authdog-cli"
+echo "Installed authdog → $DEST/authdog"
+echo "Compatibility command → $DEST/authdog-cli"
 case ":$PATH:" in
   *:"$DEST":*) ;;
   *)
@@ -294,22 +304,31 @@ $query = "target=$target"
 if ($version) { $query += "&version=$([uri]::EscapeDataString($version))" }
 
 $url = (Invoke-WebRequest -Uri "$Base/v1/binary-url?$query" -UseBasicParsing).Content.Trim()
-$tmp = Join-Path $env:TEMP ("authdog-cli-" + [guid]::NewGuid().ToString())
+$tmp = Join-Path $env:TEMP ("authdog-" + [guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
-  $zip = Join-Path $tmp "authdog-cli.zip"
+  $zip = Join-Path $tmp "authdog.zip"
   Invoke-WebRequest -Uri $url -OutFile $zip
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
 
   $dest = $env:INSTALL_DIR
   if (-not $dest) {
-    $dest = Join-Path $env:LOCALAPPDATA "Programs\\authdog-cli"
+    $dest = Join-Path $env:LOCALAPPDATA "Programs\\authdog"
   }
   New-Item -ItemType Directory -Path $dest -Force | Out-Null
-  $exe = Join-Path $tmp "authdog-cli.exe"
-  $out = Join-Path $dest "authdog-cli.exe"
-  Move-Item -Force $exe $out
-  Write-Host "Installed authdog-cli → $out"
+  $exe = Join-Path $tmp "authdog.exe"
+  if (-not (Test-Path $exe)) {
+    $exe = Join-Path $tmp "authdog-cli.exe"
+  }
+  if (-not (Test-Path $exe)) {
+    throw "Release archive contains neither authdog.exe nor authdog-cli.exe"
+  }
+  $out = Join-Path $dest "authdog.exe"
+  $compat = Join-Path $dest "authdog-cli.exe"
+  Copy-Item -Force $exe $out
+  Copy-Item -Force $exe $compat
+  Write-Host "Installed authdog → $out"
+  Write-Host "Compatibility command → $compat"
   Write-Host "Add to PATH if needed: $dest"
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

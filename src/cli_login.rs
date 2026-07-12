@@ -377,19 +377,7 @@ pub fn run_browser_login_blocking(cfg: &CliAuthConfig) -> Result<()> {
                         access_token,
                         refresh_token,
                     }) => {
-                        let prev = crate::session_store::load_session().ok().flatten();
-                        save_session(&StoredSession {
-                            access_token,
-                            refresh_token,
-                            current_organization_id: prev
-                                .as_ref()
-                                .and_then(|s| s.current_organization_id.clone()),
-                            current_tenant_id: prev
-                                .as_ref()
-                                .and_then(|s| s.current_tenant_id.clone()),
-                            current_application_id: None,
-                            current_environment_id: None,
-                        })?;
+                        save_session(&fresh_session(access_token, refresh_token))?;
                         return Ok(());
                     }
                     Ok(PollStep::Wait(_)) => {}
@@ -404,6 +392,17 @@ pub fn run_browser_login_blocking(cfg: &CliAuthConfig) -> Result<()> {
     }
 
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("redeem request never succeeded")))
+}
+
+fn fresh_session(access_token: String, refresh_token: String) -> StoredSession {
+    StoredSession {
+        access_token,
+        refresh_token,
+        current_organization_id: None,
+        current_tenant_id: None,
+        current_application_id: None,
+        current_environment_id: None,
+    }
 }
 
 #[cfg(test)]
@@ -494,5 +493,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(step, PollStep::Wait(Duration::from_millis(750)));
+    }
+
+    #[test]
+    fn fresh_login_never_inherits_previous_context() {
+        let session = fresh_session("access".into(), "refresh".into());
+        assert!(session.current_organization_id.is_none());
+        assert!(session.current_tenant_id.is_none());
+        assert!(session.current_application_id.is_none());
+        assert!(session.current_environment_id.is_none());
     }
 }

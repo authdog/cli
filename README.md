@@ -1,6 +1,6 @@
 # Authdog CLI
 
-Interactive terminal CLI for **[Authdog](https://www.authdog.com)** session flows: OAuth sign-in in the browser with a localhost callback, session storage on disk, and helpers against the Identity / Management-backed REST API (`whoami`, tenants, organizations, tenant-scoped projects, JWT claim preview). Use **`/browse`** for an org → tenant → projects picker without typing UUIDs.
+Scriptable CLI for **[Authdog](https://www.authdog.com)** identity inspection and resource context. Conventional commands provide stable text or JSON output; **`authdog ui`** keeps the fullscreen browser for interactive navigation.
 
 ## Installation
 
@@ -26,17 +26,48 @@ Optional:
 
 ## GitHub Releases
 
-When a tag like **`0.1.0`** or **`0.1.0-beta.1`** (bare semver — **no** leading **`v`**) is pushed to **`origin`** on GitHub, the **Release** workflow (`.github/workflows/release.yml`) cross-builds **`authdog-cli`**, attaches archives + **`checksums.sha256`**, and creates/updates that tag’s **[GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)**. Use **`make tag-push`** (or Actions **Create release tag**) so the tag matches `./Cargo.toml` `[package].version` and the **`[package.metadata.authdog-release]`** rules. Failed runs can be retried from the Actions UI (**Run workflow** with the existing tag).
+When a tag like **`0.1.0`** or **`0.1.0-beta.1`** (bare semver — **no** leading **`v`**) is pushed to **`origin`** on GitHub, the **Release** workflow (`.github/workflows/release.yml`) cross-builds **`authdog`**, attaches `authdog-cli-<version>-<target>` archives + **`checksums.sha256`**, and creates/updates that tag’s **[GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)**. Archives include **`authdog`** and a one-release **`authdog-cli`** compatibility copy. Use **`make tag-push`** (or Actions **Create release tag**) so the tag matches `./Cargo.toml` `[package].version` and the **`[package.metadata.authdog-release]`** rules.
 
 ## Build & run
 
 ```bash
 cargo build              # debug
 cargo build --release
-cargo run               # launches the fullscreen TUI
+cargo run -- --help
+cargo run -- ui          # launches the fullscreen TUI
 ```
 
-### Slash commands
+## Commands
+
+```bash
+authdog login
+authdog whoami
+authdog organizations list
+authdog tenants list [--organization ID]
+authdog projects list [--tenant ID]
+authdog environments list [--tenant ID] [--project ID]
+authdog context show
+authdog context set tenant TENANT_ID
+authdog context clear project
+authdog status
+authdog logout
+authdog ui
+```
+
+Use global **`-o json`** or **`--json`** for machine-readable output:
+
+```bash
+authdog organizations list --json | jq .
+authdog status -o json
+```
+
+Explicit resource flags override saved context. Projects fall back to the selected tenant; environments fall back to selected tenant and project. Context changes cascade safely: changing an organization clears tenant/project/environment, changing a tenant clears project/environment, and changing a project clears environment.
+
+`status` and `context show` never print access or refresh tokens. Set **`AUTHDOG_CONFIG_DIR`** to override the local config directory for isolated development or CI; normal installs continue using the existing `authdog-cli` config directory.
+
+## Fullscreen UI
+
+Run **`authdog ui`** to use the original Ratatui interface. Its slash commands remain available:
 
 | Command | Behaviour |
 |--------|-----------|
@@ -47,9 +78,9 @@ cargo run               # launches the fullscreen TUI
 | `/tenants` | **`GET …/v1/tenants`** listing (JSON) |
 | `/tenant` | Show, set (`/tenant <uuid>`), or clear (`/tenant clear`) the **current tenant** stored in `credentials.json` (validated against `/tenants` when that request succeeds) |
 | `/projects` | **`GET …/v1/tenants/{tenantId}/projects`** (JSON); requires a current tenant from **`/tenant`** |
-| `/browse` | Interactive flow: organizations → tenants → projects report; **↑ / ↓** to move, **Enter** to confirm, **Esc** to step back where applicable. Choosing a tenant **updates the saved current tenant** (same as **`/tenant`**) |
+| `/browse` | Interactive flow: organizations → tenants → projects → environments; **↑ / ↓** to move, **Enter** to confirm, **Esc** to step back. |
 | `/organizations` | **`GET …/v1/organizations`** listing (JSON); alias **`/orgs`** |
-| `/status` | Credentials path, **current tenant** (if any), opaque token previews |
+| `/status` | Credentials path and active organization/tenant/project/environment context |
 | `/quit` | Exit |
 
 ### Environment variables
@@ -59,6 +90,7 @@ cargo run               # launches the fullscreen TUI
 | `AUTHDOG_IDENTITY_ORIGIN` | Identity host (default `https://identity.authdog.com`) |
 | `AUTHDOG_CONSOLE_ENVIRONMENT_ID` | Sign-in environment UUID (hosted console default wired in sources) |
 | `AUTHDOG_API_ORIGIN` | REST API origin for `/v1/userinfo`, `/v1/tenants`, `/v1/tenants/{id}/projects`, `/v1/organizations` (default **`https://api.authdog.com`**) |
+| `AUTHDOG_CONFIG_DIR` | Optional config-directory override; default remains the OS-specific `authdog-cli` directory |
 
 ## Makefile targets
 
@@ -80,7 +112,7 @@ cargo run               # launches the fullscreen TUI
 
 ## Workspace layout
 
-- **`authdog-cli`** (`Cargo.toml`, `src/`) — library + **`authdog-cli`** binary (`required-features = ["desktop"]`). The Ratatui UI lives under **`src/app.rs`**, **`src/tui_output.rs`**, **`src/browse.rs`** (interactive **`/browse`**), and slash routing under **`src/commands/`** (`registry`, `dispatch`).
+- **`authdog-cli`** (`Cargo.toml`, `src/`) — library package + **`authdog`** binary (`required-features = ["desktop"]`). Conventional routing lives in **`src/cli.rs`**. Ratatui UI lives under **`src/app.rs`**, **`src/tui_output.rs`**, **`src/browse.rs`**, and **`src/commands/`**.
 - **`wasm/`** — minimal **`wasm-bindgen`** **`cdylib`** built on JWT helpers from the core crate (no terminal / OAuth).
 
 The desktop feature pulls Ratatui, Crossterm, blocking `reqwest`, OAuth loopback TCP, filesystem session store, etc. The WASM package depends on **`authdog-cli` with `default-features = false`**.
