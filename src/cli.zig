@@ -36,8 +36,8 @@ pub fn run(init: std.process.Init) !u8 {
             return 0;
         },
         .missing => {
-            try writeAll(io, std.Io.File.stderr(), help_text);
-            return 2;
+            try writeAll(io, std.Io.File.stdout(), help_text);
+            return 0;
         },
         .bad => |message| {
             try print(io, std.Io.File.stderr(), "error: {s}\n", .{message});

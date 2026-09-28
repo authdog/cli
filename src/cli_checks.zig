@@ -31,11 +31,8 @@ fn checkHelp(allocator: std.mem.Allocator, io: std.Io, exe: []const u8) !void {
 fn checkNoArgs(allocator: std.mem.Allocator, io: std.Io, exe: []const u8) !void {
     const result = try run(allocator, io, null, exe, &.{});
     defer result.deinit(allocator);
-    switch (result.term) {
-        .exited => |code| if (code == 0) return error.ExpectedFailure,
-        else => {},
-    }
-    try expectContains(result.stderr, "Usage: authdog");
+    try expectExit(result.term, 0);
+    try expectContains(result.stdout, "Usage: authdog");
 }
 
 fn checkStatusAndLogout(
