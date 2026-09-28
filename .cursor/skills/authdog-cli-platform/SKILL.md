@@ -36,18 +36,13 @@ Overrides: **`AUTHDOG_API_ORIGIN`**, **`AUTHDOG_IDENTITY_ORIGIN`**.
 3. Tokens: **`POST {identity}/api/v1/cli/oauth/redeem`**; fallback **poll** at **`cli_poll_url`**.
 4. Session file: **`~/.config/authdog-cli/credentials.json`** (crate **`session_store`**), mode `0600`.
 
-## Slash commands ↔ HTTP
+## CLI commands
 
-| Slash | Behaviour |
-|-------|-----------|
-| `/whoami` | **`GET {API}/v1/userinfo`** (Bearer); JWT preview is supplementary (signature **not** verified client-side). |
-| `/tenants` | **`GET {API}/v1/tenants`** (Bearer). Errors may expose JSON **`error`** + **`detail`** (CLI surfaces **`detail`** when present). |
-
-## API worker backing `/v1/tenants` (sibling repo)
-
-Rough path: **`platform-next/services/api/src/routes/tenants/handlers.ts`**.
-
-List handler proxies **two** Management GraphQL operations (orgs’ tenants + **`tenantsWithAccess`**), merges and normalizes REST shape (see **`tenantForRestResponse`**). Management URL from **`MANAGEMENT_ENDPOINT`** worker env ( **`getManagementEndpoint`** in **`routes/common.ts`**).
+| Command | Behaviour |
+|---------|-----------|
+| `login` | Opens Identity sign-in in browser; receives loopback callback and exchanges tokens. |
+| `logout` | Deletes saved credentials locally. |
+| `status` | Reports whether user is logged in and path to credentials. |
 
 Extend **reference.md** only when more tables or troubleshooting steps are needed.
 
@@ -58,17 +53,15 @@ Extend **reference.md** only when more tables or troubleshooting steps are neede
 ## justfile (repo root)
 
 - **`just wasm`**: WASM release artefact **`target/wasm32-unknown-unknown/release/authdog_cli_wasm.wasm`**
-- **`just tenants`**: `cargo test … tenants`-filtered subset
 
 ## Quick edit map
 
 | Area | Path |
 |------|------|
-| Tenants REST client | `src/tenants.rs` |
 | Userinfo REST + JWT prettify | `src/whoami.rs` |
 | OAuth / redeem | `src/cli_login.rs` |
-| TUI + slash dispatch | `src/main.rs` |
-| Styled output rules | `src/tui_output.rs` |
+| CLI routing | `src/cli.rs` |
+| Session store | `src/session_store.rs` |
 | Wasm exports | `wasm/src/lib.rs` |
 
 Do not confuse **CLI token preview** (`/status`) with full tokens; never paste production tokens into chats.

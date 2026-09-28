@@ -45,12 +45,6 @@ wasm:
     cargo build -p {{ wasm_pkg }} --release --target {{ wasm_target }}
     @echo "WASM artifact: {{ root }}/{{ wasm_out }}"
 
-tenants:
-    cargo test -p authdog-cli tenants
-
-projects:
-    cargo test -p authdog-cli projects
-
 clean:
     cargo clean
 

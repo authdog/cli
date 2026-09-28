@@ -1,18 +1,10 @@
-//! Shared library pieces for [`authdog-cli`] (Ratatui binary uses the same modules).
+//! Authdog CLI library.
 
 pub mod whoami;
 
-#[cfg(feature = "desktop")]
-pub mod actions;
 #[cfg(feature = "desktop")]
 pub mod cli;
 #[cfg(feature = "desktop")]
 pub mod cli_login;
 #[cfg(feature = "desktop")]
-pub mod organizations;
-#[cfg(feature = "desktop")]
-pub mod projects;
-#[cfg(feature = "desktop")]
 pub mod session_store;
-#[cfg(feature = "desktop")]
-pub mod tenants;

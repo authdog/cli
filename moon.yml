@@ -11,7 +11,7 @@ tasks:
     options:
       cache: false
 
-  # Run library unit tests (`src/tui_output.rs` tests stay on `cargo test` only).
+  # Run library unit tests.
   test:
     command: 'cargo test --lib'
     options:

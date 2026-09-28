@@ -302,37 +302,6 @@ fn accept_loopback_grant(listener: &TcpListener, deadline: Instant) -> Result<St
     }
 }
 
-pub fn suspend_tui_for_shell_io() -> Result<()> {
-    use crossterm::cursor::Show;
-    use crossterm::event::DisableMouseCapture;
-    use crossterm::execute;
-    use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
-    use std::io::{stdout, Write};
-    stdout().flush()?;
-    disable_raw_mode().context("disable_raw_mode")?;
-    execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen, Show)
-        .context("leave alt screen")?;
-    Ok(())
-}
-
-pub fn resume_tui_io() -> Result<()> {
-    use crossterm::cursor::Hide;
-    use crossterm::event::EnableMouseCapture;
-    use crossterm::execute;
-    use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
-    use std::io::{stderr, stdout, Write};
-    // Match `ratatui::try_init()` order so raw mode + alternate screen match startup.
-    enable_raw_mode().context("enable_raw_mode")?;
-    execute!(stdout(), EnterAlternateScreen, Hide).context("enter alt screen")?;
-    // Match `main.rs`: restore wheel/trackpad scrolling after OAuth.
-    if let Err(e) = execute!(stdout(), EnableMouseCapture) {
-        eprintln!("note: mouse/wheel scrolling unavailable ({e})");
-    }
-    stdout().flush().context("flush stdout after resume")?;
-    stderr().flush().context("flush stderr after resume")?;
-    Ok(())
-}
-
 /// Opens the hosted sign-in page, listens for `http://127.0.0.1:<port>/oauth/callback?grant=…`, then redeems tokens.
 pub fn run_browser_login_blocking(cfg: &CliAuthConfig) -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").context("bind 127.0.0.1 listener")?;
@@ -398,10 +367,6 @@ fn fresh_session(access_token: String, refresh_token: String) -> StoredSession {
     StoredSession {
         access_token,
         refresh_token,
-        current_organization_id: None,
-        current_tenant_id: None,
-        current_application_id: None,
-        current_environment_id: None,
     }
 }
 
@@ -496,11 +461,9 @@ mod tests {
     }
 
     #[test]
-    fn fresh_login_never_inherits_previous_context() {
+    fn fresh_session_initializes_tokens() {
         let session = fresh_session("access".into(), "refresh".into());
-        assert!(session.current_organization_id.is_none());
-        assert!(session.current_tenant_id.is_none());
-        assert!(session.current_application_id.is_none());
-        assert!(session.current_environment_id.is_none());
+        assert_eq!(session.access_token, "access");
+        assert_eq!(session.refresh_token, "refresh");
     }
 }
