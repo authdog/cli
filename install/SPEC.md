@@ -50,7 +50,7 @@ All handlers allow **`GET`** and **`HEAD`**.
 
 | Param      | Required | Description |
 |------------|----------|-------------|
-| `target`   | yes      | Rust triple; must match a CI matrix target (see `RELEASE_TARGETS` in `src/index.ts`). |
+| `target`   | yes      | Release target triple; must match `RELEASE_TARGETS` in `src/index.ts`. |
 | `version`  | no       | Exact release tag (bare semver, no leading `v`). Omit → GitHub **`releases/latest`** (stable only); if none, newest release **`releases?per_page=1`** (includes prereleases). |
 
 **Success:** `200`, `Content-Type: text/plain`, body = asset URL.

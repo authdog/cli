@@ -2,17 +2,17 @@
 $schema: 'https://moonrepo.dev/schemas/project.json'
 
 layer: 'application'
-language: 'rust'
+language: 'zig'
 
 tasks:
-  # Build the `authdog` desktop binary.
+  # Release build of the `authdog` binary.
   build:
-    command: 'cargo build --release'
+    command: 'zig build -Doptimize=ReleaseSafe'
     options:
       cache: false
 
-  # Run library unit tests.
+  # Unit tests and CLI checks.
   test:
-    command: 'cargo test --lib'
+    command: 'zig build test'
     options:
       cache: false

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ensure the pushed/dispatched git tag matches [package].version in Cargo.toml (stable or -beta.<n>)."""
+"""Ensure the pushed/dispatched git tag matches version in release.toml (stable or -beta.<n>)."""
 
 from __future__ import annotations
 
@@ -26,32 +26,28 @@ def main() -> None:
 
     body = raw
 
-    cargo_path = os.path.join(os.path.dirname(__file__), "..", "Cargo.toml")
-    cargo_path = os.path.normpath(cargo_path)
-    with open(cargo_path, "rb") as f:
-        package = tomllib.load(f).get("package")
+    release_path = os.path.join(os.path.dirname(__file__), "..", "release.toml")
+    release_path = os.path.normpath(release_path)
+    with open(release_path, "rb") as f:
+        cfg = tomllib.load(f)
 
-    if not isinstance(package, dict):
-        print("error: missing [package] table in Cargo.toml", file=sys.stderr)
-        sys.exit(2)
-
-    version = str(package.get("version") or "").strip()
+    version = str(cfg.get("version") or "").strip()
     if not version:
-        print("error: missing [package].version in Cargo.toml", file=sys.stderr)
+        print("error: missing version in release.toml", file=sys.stderr)
         sys.exit(2)
 
     beta = re.fullmatch(re.escape(version) + r"-beta\.\d+", body)
     if beta:
-        print(f"ok: beta tag {raw} matches Cargo.toml version {version}")
+        print(f"ok: beta tag {raw} matches release.toml version {version}")
         return
 
     if body == version:
-        print(f"ok: release tag {raw} matches Cargo.toml version {version}")
+        print(f"ok: release tag {raw} matches release.toml version {version}")
         return
 
     print(
-        "error: tag does not match Cargo.toml "
-        f"[package].version={version!r}: got {body!r} "
+        "error: tag does not match release.toml "
+        f"version={version!r}: got {body!r} "
         f"(expect {version} or {version}-beta.<n>)",
         file=sys.stderr,
     )

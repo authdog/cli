@@ -16,24 +16,23 @@ Maintainers deploy the Worker from **`install/`** via **[`.github/workflows/cli-
 
 ## Requirements (build from source)
 
-- **Rust toolchain** stable (Edition 2021), `cargo`.
+- **Zig** 0.16.0 (`zig` on `PATH`).
 
 Optional:
 
 - **[just](https://just.systems)** for repository recipes.
-- **`wasm32-unknown-unknown`** target for `just wasm` (installed automatically via `rustup` by the recipe).
 - **[moon](https://moonrepo.dev)** on PATH for `just moon-build` / `just moon-test`.
 
 ## GitHub Releases
 
-When a tag like **`0.1.0`** or **`0.1.0-beta.1`** (bare semver — **no** leading **`v`**) is pushed to **`origin`** on GitHub, the **Release** workflow (`.github/workflows/release.yml`) cross-builds **`authdog`**, attaches `authdog-cli-<version>-<target>` archives + **`checksums.sha256`**, and creates/updates that tag’s **[GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)**. Archives include **`authdog`** and a one-release **`authdog-cli`** compatibility copy. Use **`just tag-push`** (or Actions **Create release tag**) so the tag matches `./Cargo.toml` `[package].version` and the **`[package.metadata.authdog-release]`** rules.
+When a tag like **`0.1.0`** or **`0.1.0-beta.1`** (bare semver — **no** leading **`v`**) is pushed to **`origin`** on GitHub, the **Release** workflow (`.github/workflows/release.yml`) cross-builds **`authdog`**, attaches `authdog-cli-<version>-<target>` archives + **`checksums.sha256`**, and creates/updates that tag’s **[GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)**. Archives include **`authdog`** and a one-release **`authdog-cli`** compatibility copy. Archive names keep the installer target triples (including `x86_64-pc-windows-msvc`). Use **`just tag-push`** (or Actions **Create release tag**) so the tag matches `release.toml` `version` and the **`stable`** flag.
 
 ## Build & run
 
 ```bash
-cargo build              # debug
-cargo build --release
-cargo run -- --help
+zig build                 # debug, installs zig-out/bin/authdog
+zig build -Doptimize=ReleaseSafe
+zig build run -- --help
 ```
 
 ## Commands
@@ -64,32 +63,28 @@ authdog status -o json
 
 | Recipe | Description |
 |--------|-------------|
-| `just` / `just build` | `cargo build` |
-| `just release` | `cargo build --release` |
-| `just run [ARGS]…` | `cargo run` with optional arguments |
-| `just check` | `cargo check` |
-| `just test` | `cargo test` |
-| `just clippy` | `cargo clippy --all-targets` |
-| `just fmt` | `cargo fmt` |
-| **`just wasm`** | Release build of **`authdog-cli-wasm`** → `target/wasm32-unknown-unknown/release/authdog_cli_wasm.wasm` |
+| `just` / `just build` | `zig build` |
+| `just release` | `zig build -Doptimize=ReleaseSafe` |
+| `just run [ARGS]…` | `zig build run` with optional arguments |
+| `just check` | `zig build` |
+| `just test` | `zig build test` |
+| `just fmt` | `zig fmt` |
 | **`just moon-build`** | `moon run authdog-cli:build` (release build of the desktop CLI) |
-| **`just moon-test`** | `moon run authdog-cli:test` (library unit tests) |
-| `just clean` | `cargo clean` |
+| **`just moon-test`** | `moon run authdog-cli:test` |
+| `just clean` | remove `zig-out` and `.zig-cache` |
 
-## Workspace layout
+## Layout
 
-- **`authdog-cli`** (`Cargo.toml`, `src/`) — library package + **`authdog`** binary (`required-features = ["desktop"]`). CLI routing lives in **`src/cli.rs`**, browser login flow in **`src/cli_login.rs`**, and session storage in **`src/session_store.rs`**.
-- **`wasm/`** — minimal **`wasm-bindgen`** **`cdylib`** built on JWT helpers from the core crate (no terminal / OAuth).
-
-The desktop feature pulls blocking `reqwest`, OAuth loopback TCP, filesystem session store, etc. The WASM package depends on **`authdog-cli` with `default-features = false`**.
-
-## Wasm (`just wasm`)
-
-The WASM artefact exposes **JWT payload inspection helpers** (**signatures not verified**, same caveat as claim previews). Use **`wasm-pack build`** inside `wasm/` if you want generated JS bindings for the browser.
+- **`src/main.zig`** — process entry.
+- **`src/cli.zig`** — argument parsing and text/JSON output.
+- **`src/login.zig`** — browser login, loopback callback, and token redeem.
+- **`src/session.zig`** — `credentials.json` storage.
+- **`assets/oauth_callback_success.html`** — page served on the loopback callback.
+- **`release.toml`** — version and whether tags are stable or `beta.n`.
 
 ## Offline note
 
-`/login` succeeds only with network connectivity to Identity and a reachable loopback OAuth callback. Offline usage is limited to reading stored credentials (`/status`).
+`login` succeeds only with network connectivity to Identity and a reachable loopback OAuth callback. Offline usage is limited to reading stored credentials (`status`).
 
 ## License
 

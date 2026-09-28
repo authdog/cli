@@ -2,16 +2,15 @@
 name: authdog-cli-platform
 description: >-
   Authdog CLI and hosted API context (REST origins, OAuth, env vars, code maps).
-  Use when changing authdog-cli, /v1/userinfo or /v1/tenants, Identity sign-in or
-  redeem URLs, WASM build, just recipes, or when the user mentions Authdog API
-  location, AUTHDOG_* env vars, Management GraphQL backing the API worker,
-  oauth callback, tenants list, or whoami.
+  Use when changing authdog-cli, Identity sign-in or redeem URLs, just recipes,
+  or when the user mentions Authdog API location, AUTHDOG_* env vars, Management
+  GraphQL backing the API worker, or oauth callback.
 disable-model-invocation: true
 ---
 
 # Authdog CLI and platform surface
 
-Assume the Rust workspace lives at **`authdog-cli/`** (`Cargo.toml`). A sibling **`platform-next/`** checkout may exist **one directory up** (`../platform-next`): API/Management implementations live there, not inside this crate.
+The CLI is a Zig program (`build.zig`, `src/`). A sibling **`platform-next/`** checkout may exist **one directory up** (`../platform-next`): API/Management implementations live there, not inside this repository.
 
 ## Hosted origins (production defaults)
 
@@ -21,20 +20,19 @@ Assume the Rust workspace lives at **`authdog-cli/`** (`Cargo.toml`). A sibling 
 | **Identity** | `https://identity.authdog.com` | `/signin/{environmentId}?cli_sess=…&cli_redirect=…`, `POST /api/v1/cli/oauth/redeem`, `GET /api/v1/cli/oauth/poll` |
 | JWKS reference (management token verify) | `https://id.authdog.com/.well-known/jwks.json` | (server-side Management; not CLI) |
 
-Overrides: **`AUTHDOG_API_ORIGIN`**, **`AUTHDOG_IDENTITY_ORIGIN`**.
+Override: **`AUTHDOG_IDENTITY_ORIGIN`**.
 
-## Rust CLI defaults (source of truth)
+## CLI defaults (source of truth)
 
-- API: **`whoami::DEFAULT_API_ORIGIN`** = `https://api.authdog.com` (`AUTHDOG_API_ORIGIN`).
-- Identity: **`DEFAULT_IDENTITY_ORIGIN`** (`AUTHDOG_IDENTITY_ORIGIN`), **`DEFAULT_CONSOLE_ENVIRONMENT_ID`** (`AUTHDOG_CONSOLE_ENVIRONMENT_ID`).
-- OAuth loopback path: **`cli_login::LOOPBACK_OAUTH_REDIRECT_PATH`** (`/oauth/callback`).
+- Identity: **`default_identity_origin`** (`AUTHDOG_IDENTITY_ORIGIN`), **`default_console_environment_id`** (`AUTHDOG_CONSOLE_ENVIRONMENT_ID`) in `src/login.zig`.
+- OAuth loopback path: **`loopback_oauth_redirect_path`** (`/oauth/callback`).
 
 ## OAuth (browser ↔ CLI)
 
 1. CLI listens **`127.0.0.1:0`** HTTP; redirect URL **`http://127.0.0.1:{port}/oauth/callback`**.
 2. Browser returns **`GET /oauth/callback?grant=<64 hex>`**; CLI replies with **`assets/oauth_callback_success.html`** (logo from **`https://api.authdog.com/favicon.ico`** unless changed).
-3. Tokens: **`POST {identity}/api/v1/cli/oauth/redeem`**; fallback **poll** at **`cli_poll_url`**.
-4. Session file: **`~/.config/authdog-cli/credentials.json`** (crate **`session_store`**), mode `0600`.
+3. Tokens: **`POST {identity}/api/v1/cli/oauth/redeem`**.
+4. Session file: **`~/.config/authdog-cli/credentials.json`** on Linux (`src/session.zig`), mode `0600`. macOS uses `~/Library/Application Support/com.Authdog.authdog-cli`. Windows uses `%APPDATA%\Authdog\authdog-cli`.
 
 ## CLI commands
 
@@ -42,26 +40,22 @@ Overrides: **`AUTHDOG_API_ORIGIN`**, **`AUTHDOG_IDENTITY_ORIGIN`**.
 |---------|-----------|
 | `login` | Opens Identity sign-in in browser; receives loopback callback and exchanges tokens. |
 | `logout` | Deletes saved credentials locally. |
-| `status` | Reports whether user is logged in and path to credentials. |
+| `status` | Reports whether user is logged in and path to credentials. Never prints tokens. |
 
 Extend **reference.md** only when more tables or troubleshooting steps are needed.
 
-## WASM
-
-- Crate **`wasm/`** (**`authdog-cli-wasm`**) **`cdylib`** + **`wasm-bindgen`**; depends on **`authdog-cli`** with **`default-features = false`** (JWT/helpers only—no OAuth/TUI).
-
 ## justfile (repo root)
 
-- **`just wasm`**: WASM release artefact **`target/wasm32-unknown-unknown/release/authdog_cli_wasm.wasm`**
+- **`just build`** / **`just test`**: `zig build` and `zig build test`
+- Version and beta tagging: **`release.toml`**
 
 ## Quick edit map
 
 | Area | Path |
 |------|------|
-| Userinfo REST + JWT prettify | `src/whoami.rs` |
-| OAuth / redeem | `src/cli_login.rs` |
-| CLI routing | `src/cli.rs` |
-| Session store | `src/session_store.rs` |
-| Wasm exports | `wasm/src/lib.rs` |
+| OAuth / redeem | `src/login.zig` |
+| CLI routing | `src/cli.zig` |
+| Session store | `src/session.zig` |
+| Process entry | `src/main.zig` |
 
-Do not confuse **CLI token preview** (`/status`) with full tokens; never paste production tokens into chats.
+Do not print access or refresh tokens from `status`. Never paste production tokens into chats.

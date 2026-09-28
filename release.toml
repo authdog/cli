@@ -1,0 +1,5 @@
+# Release tagging (`just tag` / GitHub Actions "Create release tag"):
+# - stable = false → tags are `{version}-beta.{n}` (n increments across existing beta tags).
+# - stable = true → tag is exactly `{version}` (bare semver; no leading `v`).
+version = "0.1.0"
+stable = false

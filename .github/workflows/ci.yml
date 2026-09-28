@@ -13,27 +13,21 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   lint:
-    name: fmt + clippy
+    name: zig fmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: mlugg/setup-zig@v2
         with:
-          components: rustfmt, clippy
+          version: 0.16.0
 
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Cargo fmt (check)
-        run: cargo fmt --all --check
-
-      - name: Cargo clippy
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: zig fmt (check)
+        run: zig fmt --check build.zig src
 
   build-test:
     name: Build / test (${{ matrix.os }})
@@ -47,15 +41,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Cargo build
-        run: cargo build --locked --verbose
-
-      - name: Cargo test
-        run: cargo test --locked --verbose --all-targets
+      - name: zig build test
+        run: zig build test
 
   moon:
     name: moon build + test
@@ -63,9 +54,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
       - name: Install moon
         uses: dbrrt/setup-moon@v1.0.0
@@ -73,5 +64,5 @@ jobs:
       - name: moon build (desktop CLI)
         run: moon run authdog-cli:build
 
-      - name: moon test (library unit tests)
+      - name: moon test
         run: moon run authdog-cli:test

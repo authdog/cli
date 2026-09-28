@@ -146,7 +146,7 @@ function usage(origin: string): Response {
     'Windows (PowerShell):',
     `  iwr -useb ${origin}/install.ps1 | iex`,
     '',
-    'Resolve download URL for a Rust triple (see GitHub Release workflow matrix):',
+    'Resolve download URL for a release target triple (see GitHub Release workflow):',
     `  curl -fsSL '${origin}/v1/binary-url?target=x86_64-unknown-linux-gnu'`,
     '',
     'Pin a version (bare semver tag, same as GitHub release tag — no leading v):',

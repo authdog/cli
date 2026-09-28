@@ -1,0 +1,13 @@
+.{
+    .name = .authdog_cli,
+    .version = "0.1.0",
+    .fingerprint = 0xcd6c76e11018aa96, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "assets",
+        "release.toml",
+    },
+}

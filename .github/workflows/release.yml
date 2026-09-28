@@ -3,6 +3,9 @@ name: Release
 # Multi-platform binaries + GitHub Release for version tags pushed to GitHub (e.g. `git push origin 0.1.0`).
 # Tag format follows `just tag-push` / "Create release tag" workflow (`X.Y.Z` or `X.Y.Z-beta.<n>`; no leading `v`).
 # Manual re-run from the Actions tab for an existing tag: workflow_dispatch with the same tag name.
+#
+# Archive names stay on the installer triples in install/src/index.ts. Zig cross-compiles those
+# binaries from Linux; the Windows archive is still named x86_64-pc-windows-msvc.
 
 on:
   push:
@@ -26,14 +29,12 @@ permissions:
 
 env:
   ASSET_PREFIX: authdog-cli
-  CARGO_BIN_NAME: authdog
-  CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   assert-release-tag:
-    name: Assert tag matches Cargo.toml
+    name: Assert tag matches release.toml
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -45,113 +46,69 @@ jobs:
         run: python3 scripts/assert_release_tag_matches_cargo.py
 
   packages:
-    name: ${{ matrix.target }}
+    name: Cross-compile release archives
     needs: assert-release-tag
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux: glibc (x86_64, aarch64, i686), 32-bit ARM (armv7), static musl (x86_64, aarch64).
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            build_tool: cargo
-          - os: ubuntu-22.04
-            target: aarch64-unknown-linux-gnu
-            build_tool: cross
-          - os: ubuntu-22.04
-            target: i686-unknown-linux-gnu
-            build_tool: cross
-          - os: ubuntu-22.04
-            target: armv7-unknown-linux-gnueabihf
-            build_tool: cross
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-musl
-            build_tool: cross
-          - os: ubuntu-22.04
-            target: aarch64-unknown-linux-musl
-            build_tool: cross
-          # macOS: Intel and Apple Silicon (separate archives).
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            build_tool: cargo
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            build_tool: cargo
-          # Windows: MSVC x64.
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            build_tool: cargo
-
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: mlugg/setup-zig@v2
         with:
-          targets: ${{ matrix.target }}
+          version: 0.16.0
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.target }}
-
-      - name: Install cross
-        if: matrix.build_tool == 'cross'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
-
-      - name: Build (cross)
-        if: matrix.build_tool == 'cross'
-        run: cross build --locked --release -p authdog-cli --target ${{ matrix.target }}
-
-      - name: Build (cargo)
-        if: matrix.build_tool == 'cargo'
-        run: cargo build --locked --release -p authdog-cli --target ${{ matrix.target }}
-
-      - name: Package
+      - name: Build and package
         shell: bash
         env:
           VERSION: ${{ env.RELEASE_TAG }}
-          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          declare -r BIN="${CARGO_BIN_NAME}"
-          declare -r PREFIX="${ASSET_PREFIX}"
-          declare -r ver="${VERSION}"
-          declare -r tgt="${TARGET}"
-          Os="${RUNNER_OS}"
-          exe="target/${tgt}/release/${BIN}"
-          if [[ "${Os}" == "Windows" ]]; then exe="${exe}.exe"; fi
-          echo "Packaging $(ls -la "${exe}")"
-          stage="dist/package"
-          mkdir -p "${stage}"
-          if [[ "${Os}" == "Windows" ]]; then
-            cp "${exe}" "${stage}/authdog.exe"
-            cp "${exe}" "${stage}/authdog-cli.exe"
-            outfile="${PREFIX}-${ver}-${tgt}.zip"
-            # Relative archive path: GNU tar mis-reads D:\... as remote host "D".
-            tar.exe -acf "dist/${outfile}" -C "${stage}" authdog.exe authdog-cli.exe
-            tar.exe -tf "dist/${outfile}" | tee dist/archive-contents.txt
-            grep -Fx authdog.exe dist/archive-contents.txt
-            grep -Fx authdog-cli.exe dist/archive-contents.txt
-          else
-            cp "${exe}" "${stage}/authdog"
-            cp "${exe}" "${stage}/authdog-cli"
-            outfile="${PREFIX}-${ver}-${tgt}.tar.gz"
-            tar czf "dist/${outfile}" -C "${stage}" authdog authdog-cli
-            tar tzf "dist/${outfile}" | tee dist/archive-contents.txt
-            grep -Fx authdog dist/archive-contents.txt
-            grep -Fx authdog-cli dist/archive-contents.txt
-          fi
-          rm -rf "${stage}" dist/archive-contents.txt
+          # installer triple | zig target
+          pairs=(
+            "x86_64-unknown-linux-gnu|x86_64-linux-gnu"
+            "aarch64-unknown-linux-gnu|aarch64-linux-gnu"
+            "i686-unknown-linux-gnu|x86-linux-gnu"
+            "armv7-unknown-linux-gnueabihf|arm-linux-gnueabihf"
+            "x86_64-unknown-linux-musl|x86_64-linux-musl"
+            "aarch64-unknown-linux-musl|aarch64-linux-musl"
+            "x86_64-apple-darwin|x86_64-macos"
+            "aarch64-apple-darwin|aarch64-macos"
+            "x86_64-pc-windows-msvc|x86_64-windows"
+          )
+          for pair in "${pairs[@]}"; do
+            triple="${pair%%|*}"
+            zig_target="${pair##*|}"
+            echo "Building ${triple} (${zig_target})"
+            zig build -Dtarget="${zig_target}" -Doptimize=ReleaseSafe
+            stage="dist/package"
+            rm -rf "${stage}"
+            mkdir -p "${stage}"
+            if [[ "${triple}" == *windows* ]]; then
+              cp zig-out/bin/authdog.exe "${stage}/authdog.exe"
+              cp zig-out/bin/authdog.exe "${stage}/authdog-cli.exe"
+              outfile="${ASSET_PREFIX}-${VERSION}-${triple}.zip"
+              tar -acf "dist/${outfile}" -C "${stage}" authdog.exe authdog-cli.exe
+              tar -tf "dist/${outfile}" | tee dist/archive-contents.txt
+              grep -Fx authdog.exe dist/archive-contents.txt
+              grep -Fx authdog-cli.exe dist/archive-contents.txt
+            else
+              cp zig-out/bin/authdog "${stage}/authdog"
+              cp zig-out/bin/authdog "${stage}/authdog-cli"
+              outfile="${ASSET_PREFIX}-${VERSION}-${triple}.tar.gz"
+              tar czf "dist/${outfile}" -C "${stage}" authdog authdog-cli
+              tar tzf "dist/${outfile}" | tee dist/archive-contents.txt
+              grep -Fx authdog dist/archive-contents.txt
+              grep -Fx authdog-cli dist/archive-contents.txt
+            fi
+            rm -rf "${stage}" dist/archive-contents.txt
+          done
 
       - uses: actions/upload-artifact@v6
         with:
-          name: package-${{ matrix.target }}
+          name: packages
           path: dist/*
 
   github-release:
@@ -161,8 +118,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v7
         with:
-          pattern: package-*
-          merge-multiple: true
+          name: packages
           path: dist
 
       - name: checksums.sha256

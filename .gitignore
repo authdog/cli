@@ -1,3 +1,5 @@
 /target/
 /.moon/cache/
 /bazel-*
+/.zig-cache/
+/zig-out/

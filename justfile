@@ -1,22 +1,19 @@
 root := justfile_directory()
 release_fetch_tags := env_var_or_default("RELEASE_FETCH_TAGS", "1")
-wasm_pkg := "authdog-cli-wasm"
-wasm_target := "wasm32-unknown-unknown"
-wasm_out := "target/" + wasm_target + "/release/authdog_cli_wasm.wasm"
 
 default: build
 
 build:
-    cargo build
+    zig build
 
 release:
-    cargo build --release
+    zig build -Doptimize=ReleaseSafe
 
-# Print the next release tag Cargo + git tags would compute.
+# Print the next release tag release.toml + git tags would compute.
 release-tag:
     @RELEASE_FETCH_TAGS="{{ release_fetch_tags }}" python3 "{{ root }}/scripts/compute_release_tag.py"
 
-# Create an annotated git tag from Cargo metadata.
+# Create an annotated git tag from release.toml.
 tag:
     @RELEASE_FETCH_TAGS="{{ release_fetch_tags }}" "{{ root }}/scripts/create-local-release-tag.sh"
 
@@ -25,28 +22,19 @@ tag-push:
 
 # Usage: just run status --json
 run *args:
-    cargo run -- {{ args }}
+    zig build run -- {{ args }}
 
 check:
-    cargo check
+    zig build
 
 fmt:
-    cargo fmt
-
-clippy:
-    cargo clippy --all-targets
+    zig fmt build.zig src
 
 test:
-    cargo test
-
-# Build the embeddable wasm-bindgen artifact.
-wasm:
-    rustup target add {{ wasm_target }} >/dev/null 2>&1 || true
-    cargo build -p {{ wasm_pkg }} --release --target {{ wasm_target }}
-    @echo "WASM artifact: {{ root }}/{{ wasm_out }}"
+    zig build test
 
 clean:
-    cargo clean
+    rm -rf zig-out .zig-cache
 
 moon-build:
     moon run authdog-cli:build

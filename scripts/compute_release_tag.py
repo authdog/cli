@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compute the next release git tag from Cargo.toml ([package].version + metadata)."""
+"""Compute the next release git tag from release.toml (version + stable)."""
 
 from __future__ import annotations
 
@@ -65,28 +65,16 @@ def _max_beta_suffix(root: str, base: str) -> int:
 
 def main() -> None:
     root = _repo_root()
-    cargo_path = os.path.join(root, "Cargo.toml")
-    with open(cargo_path, "rb") as f:
+    release_path = os.path.join(root, "release.toml")
+    with open(release_path, "rb") as f:
         cfg = tomllib.load(f)
 
-    package = cfg.get("package")
-    if not isinstance(package, dict):
-        print("error: missing [package] table in Cargo.toml", file=sys.stderr)
-        sys.exit(2)
-
-    version = str(package.get("version") or "").strip()
+    version = str(cfg.get("version") or "").strip()
     if not version:
-        print("error: missing [package].version in Cargo.toml", file=sys.stderr)
+        print("error: missing version in release.toml", file=sys.stderr)
         sys.exit(2)
 
-    md = package.get("metadata")
-    release_md: dict = {}
-    if isinstance(md, dict):
-        entry = md.get("authdog-release")
-        if isinstance(entry, dict):
-            release_md = entry
-
-    stable = bool(release_md.get("stable", False))
+    stable = bool(cfg.get("stable", False))
 
     _fetch_tags(root)
 

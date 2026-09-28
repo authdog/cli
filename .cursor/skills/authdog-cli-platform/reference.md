@@ -4,9 +4,9 @@
 
 | Variable | Used by | Default (if unset) |
 |----------|---------|----------------------|
-| `AUTHDOG_API_ORIGIN` | `whoami::api_origin()`, tenants / organizations / projects fetch | `https://api.authdog.com` |
-| `AUTHDOG_IDENTITY_ORIGIN` | `CliAuthConfig::from_env()`, redeem/poll/signin URLs | `https://identity.authdog.com` |
-| `AUTHDOG_CONSOLE_ENVIRONMENT_ID` | Sign-in URL `/signin/{id}` | Hard-coded console env UUID in `cli_login.rs` |
+| `AUTHDOG_IDENTITY_ORIGIN` | `AuthConfig.fromEnv`, redeem/signin URLs | `https://identity.authdog.com` |
+| `AUTHDOG_CONSOLE_ENVIRONMENT_ID` | Sign-in URL `/signin/{id}` | Hard-coded console env UUID in `src/login.zig` |
+| `AUTHDOG_CONFIG_DIR` | Credential directory override | OS config dir for `authdog-cli` |
 
 ## Useful probes (operator)
 
@@ -18,14 +18,15 @@ curl -sS -o /dev/null -w "%{http_code}\n" "https://api.authdog.com/v1/tenants/${
 curl -sS -o /dev/null -w "%{http_code}\n" https://api.authdog.com/favicon.ico
 ```
 
-## Workspace packages
+## Layout
 
-| Package | Role |
-|---------|------|
-| `authdog-cli` (root `Cargo.toml`) | **Library** (`src/lib.rs`) + **binary** `authdog-cli` with `required-features = ["desktop"]` |
-| `authdog-cli-wasm` (`wasm/`) | `cdylib` for browser/embed via `wasm-bindgen` |
-
-Desktop feature aggregates TUI deps (Ratatui, Crossterm, blocking `reqwest`, `open`, OAuth TCP, dirs, …).
+| Piece | Role |
+|-------|------|
+| `src/main.zig` | `authdog` process entry |
+| `src/cli.zig` | `login`, `logout`, `status`, text/JSON output |
+| `src/login.zig` | Loopback OAuth and redeem |
+| `src/session.zig` | `credentials.json` |
+| `release.toml` | Version and `stable` flag for git tags |
 
 ## platform-next pointers (adjacent checkout)
 
