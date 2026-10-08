@@ -6,6 +6,7 @@ const std = @import("std");
 pub const StoredSession = struct {
     access_token: []const u8,
     refresh_token: []const u8,
+    api_origin: ?[]const u8 = null,
 };
 
 pub fn credentialsPath(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) ![]u8 {
@@ -76,9 +77,14 @@ pub fn loadSessionFrom(allocator: std.mem.Allocator, io: std.Io, path: []const u
     }) catch return error.InvalidCredentials;
     defer parsed.deinit();
 
+    const api_origin: ?[]const u8 = if (parsed.value.api_origin) |origin|
+        try allocator.dupe(u8, origin)
+    else
+        null;
     return .{
         .access_token = try allocator.dupe(u8, parsed.value.access_token),
         .refresh_token = try allocator.dupe(u8, parsed.value.refresh_token),
+        .api_origin = api_origin,
     };
 }
 

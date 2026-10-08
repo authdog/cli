@@ -41,13 +41,25 @@ zig build run -- --help
 authdog login
 authdog status
 authdog logout
+authdog whoami
+authdog link --tenant-id … --application-id … --environment-id …
+authdog init [--dry-run] [--framework nextjs]
+authdog config pull
+authdog doctor [--mcp]
+authdog webhooks verify --secret … --signature … --body '…'
+authdog impersonate --user-id …
+authdog deploy status
+authdog mcp install
 ```
 
-Use global **`-o json`** or **`--json`** for machine-readable output:
+Use **`--json`** or **`-o json`** anywhere in the command line for machine-readable output:
 
 ```bash
-authdog status -o json
+authdog status --json
+authdog doctor --mcp -o json
 ```
+
+Project linking writes **`.authdog/project.json`**; credentials stay in **`credentials.json`**. See **[`SPEC.md`](SPEC.md)** for the full command spec.
 
 `status` never prints access or refresh tokens. Set **`AUTHDOG_CONFIG_DIR`** to override the local config directory for isolated development or CI; normal installs continue using the existing `authdog-cli` config directory.
 
@@ -58,6 +70,7 @@ authdog status -o json
 | `AUTHDOG_IDENTITY_ORIGIN` | Identity host (default `https://identity.authdog.com`) |
 | `AUTHDOG_CONSOLE_ENVIRONMENT_ID` | Sign-in environment UUID (hosted console default wired in sources) |
 | `AUTHDOG_CONFIG_DIR` | Optional config-directory override; default remains the OS-specific `authdog-cli` directory |
+| `AUTHDOG_API_ORIGIN` | REST API base URL (default `https://api.authdog.com`) |
 
 ## Just recipes
 
@@ -76,7 +89,11 @@ authdog status -o json
 ## Layout
 
 - **`src/main.zig`** — process entry.
-- **`src/cli.zig`** — argument parsing and text/JSON output.
+- **`src/cli.zig`** — argument parsing and dispatch.
+- **`src/commands.zig`** — `whoami`, `link`, `init`, `doctor`, etc.
+- **`src/api/client.zig`** — `/v1` HTTP client.
+- **`src/project.zig`** — `.authdog/project.json` manifest.
+- **`SPEC.md`** — product spec and API mapping.
 - **`src/login.zig`** — browser login, loopback callback, and token redeem.
 - **`src/session.zig`** — `credentials.json` storage.
 - **`assets/oauth_callback_success.html`** — page served on the loopback callback.

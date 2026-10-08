@@ -154,7 +154,9 @@ pub fn runBrowserLogin(
 
     const url = try redeemUrl(allocator, cfg);
     const body = try std.fmt.allocPrint(allocator, "{{\"grant\":\"{s}\"}}", .{grant});
-    const tokens = try redeemTokens(allocator, io, url, body);
+    var tokens = try redeemTokens(allocator, io, url, body);
+    const api_origin_raw = environ.get("AUTHDOG_API_ORIGIN") orelse "https://api.authdog.com";
+    tokens.api_origin = try allocator.dupe(u8, trimTrailingSlashes(api_origin_raw));
     try session.saveSession(allocator, io, environ, tokens);
 }
 
