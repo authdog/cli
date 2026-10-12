@@ -32,6 +32,10 @@ interface GithubRelease {
   assets: GithubAsset[];
 }
 
+interface GithubTag {
+  name: string;
+}
+
 function isReleaseTarget(s: string): s is ReleaseTarget {
   return (RELEASE_TARGETS as readonly string[]).includes(s);
 }
@@ -42,6 +46,40 @@ function assetExtension(target: ReleaseTarget): string {
 
 function expectedAssetName(bin: string, tag: string, target: ReleaseTarget): string {
   return `${bin}-${tag}-${target}${assetExtension(target)}`;
+}
+
+/** Bare semver tags only (`0.1.0`, `0.1.0-beta.2`; optional leading `v`). */
+function parseReleaseTag(tag: string): { major: number; minor: number; patch: number; pre: number } {
+  const trimmed = tag.trim().replace(/^v/, '');
+  const dash = trimmed.indexOf('-');
+  const core = dash === -1 ? trimmed : trimmed.slice(0, dash);
+  const suffix = dash === -1 ? '' : trimmed.slice(dash + 1);
+  const parts = core.split('.').map((n) => parseInt(n, 10) || 0);
+  const major = parts[0] ?? 0;
+  const minor = parts[1] ?? 0;
+  const patch = parts[2] ?? 0;
+  let pre = Number.POSITIVE_INFINITY;
+  if (suffix) {
+    const beta = /^beta\.(\d+)$/.exec(suffix);
+    pre = beta ? parseInt(beta[1], 10) : -1;
+  }
+  return { major, minor, patch, pre };
+}
+
+export function compareReleaseTags(a: string, b: string): number {
+  const pa = parseReleaseTag(a);
+  const pb = parseReleaseTag(b);
+  if (pa.major !== pb.major) return pa.major - pb.major;
+  if (pa.minor !== pb.minor) return pa.minor - pb.minor;
+  if (pa.patch !== pb.patch) return pa.patch - pb.patch;
+  return pa.pre - pb.pre;
+}
+
+function normalizeVersionParam(version: string | null): string | null {
+  if (!version) return null;
+  const v = version.trim();
+  if (!v || v.toLowerCase() === 'latest') return null;
+  return v;
 }
 
 const GITHUB_HEADERS: Record<string, string> = {
@@ -79,41 +117,72 @@ async function fetchGithubRelease(repo: string, version: string | null): Promise
     return res.json() as Promise<GithubRelease[]>;
   }
 
-  if (version) {
-    return ghJson(`repos/${repo}/releases/tags/${encodeURIComponent(version)}`, 3600);
+  async function fetchPublishedReleases(maxPages = 5): Promise<GithubRelease[]> {
+    const out: GithubRelease[] = [];
+    for (let page = 1; page <= maxPages; page++) {
+      const batch = await ghJsonArray(`repos/${repo}/releases?per_page=100&page=${page}`, 120);
+      if (batch.length === 0) break;
+      for (const r of batch) {
+        if (!(r as GithubRelease & { draft?: boolean }).draft) {
+          out.push(r);
+        }
+      }
+      if (batch.length < 100) break;
+    }
+    return out;
   }
 
-  /** `/releases/latest` omits prereleases → 404 when only betas/rcs exist (see SPEC). */
-  const latestUrl = `repos/${repo}/releases/latest`;
-  const latestRes = await fetch(`https://api.github.com/${latestUrl}`, {
-    headers,
-    cf: { cacheEverything: true, cacheTtl: 300 },
-  });
-  if (latestRes.ok) {
-    return latestRes.json() as Promise<GithubRelease>;
+  function pickNewestRelease(releases: GithubRelease[]): GithubRelease {
+    if (releases.length === 0) {
+      throw new Error('GitHub API: no published releases');
+    }
+    let best = releases[0];
+    for (const r of releases) {
+      if (compareReleaseTags(r.tag_name, best.tag_name) > 0) {
+        best = r;
+      }
+    }
+    return best;
   }
 
-  const latestBody = await latestRes.text();
-  if (latestRes.status !== 404) {
-    throw new Error(`GitHub API ${latestRes.status}: ${latestBody.slice(0, 500)}`);
+  const pinned = normalizeVersionParam(version);
+  if (pinned) {
+    return ghJson(`repos/${repo}/releases/tags/${encodeURIComponent(pinned)}`, 3600);
   }
 
-  const any = await ghJsonArray(`repos/${repo}/releases?per_page=1`, 300);
-  const first = any[0];
-  if (!first) {
-    throw new Error(`GitHub API: no releases (latest returned 404: ${latestBody.slice(0, 200)})`);
-  }
-  return first;
+  const published = await fetchPublishedReleases();
+  return pickNewestRelease(published);
 }
 
-function resolveAssetUrl(release: GithubRelease, bin: string, target: ReleaseTarget): string {
-  const want = expectedAssetName(bin, release.tag_name, target);
-  const hit = release.assets.find((a) => a.name === want);
-  if (!hit) {
-    const names = release.assets.map((a) => a.name).sort();
-    throw new Error(`No asset ${want} on ${release.tag_name}. Known assets: ${names.join(', ') || '(none)'}`);
+async function fetchNewestGitTag(repo: string): Promise<string | null> {
+  const url = `https://api.github.com/repos/${repo}/tags?per_page=100`;
+  const res = await fetch(url, {
+    headers: GITHUB_HEADERS,
+    cf: { cacheEverything: true, cacheTtl: 120 },
+  });
+  if (!res.ok) return null;
+  const tags = (await res.json()) as GithubTag[];
+  if (tags.length === 0) return null;
+  let best = tags[0].name;
+  for (const t of tags) {
+    if (compareReleaseTags(t.name, best) > 0) best = t.name;
   }
-  return hit.browser_download_url;
+  return best;
+}
+
+export function resolveAssetUrl(release: GithubRelease, bin: string, target: ReleaseTarget): string {
+  const prefixes = bin === 'authdog' ? (['authdog', 'authdog-cli'] as const) : ([bin] as const);
+  const tried: string[] = [];
+  for (const prefix of prefixes) {
+    const want = expectedAssetName(prefix, release.tag_name, target);
+    tried.push(want);
+    const hit = release.assets.find((a) => a.name === want);
+    if (hit) return hit.browser_download_url;
+  }
+  const names = release.assets.map((a) => a.name).sort();
+  throw new Error(
+    `No asset ${tried.join(' or ')} on ${release.tag_name}. Known assets: ${names.join(', ') || '(none)'}`,
+  );
 }
 
 function plain(text: string, status = 200): Response {
@@ -140,8 +209,12 @@ function usage(origin: string): Response {
   const lines = [
     'Authdog CLI install worker',
     '',
-    'Linux / macOS:',
+    'Linux / macOS (newest published GitHub Release by semver, including betas):',
     `  curl -fsSL ${origin}/install | bash`,
+    '',
+    'Pin a release tag (must have GitHub Release assets — tag alone is not enough):',
+    `  curl -fsSL '${origin}/install?version=0.1.0-beta.2' | bash`,
+    `  curl -fsSL ${origin}/install | AUTHDOG_CLI_VERSION=0.1.0-beta.2 bash`,
     '',
     'Windows (PowerShell):',
     `  iwr -useb ${origin}/install.ps1 | iex`,
@@ -149,12 +222,20 @@ function usage(origin: string): Response {
     'Resolve download URL for a release target triple (see GitHub Release workflow):',
     `  curl -fsSL '${origin}/v1/binary-url?target=x86_64-unknown-linux-gnu'`,
     '',
-    'Pin a version (bare semver tag, same as GitHub release tag — no leading v):',
-    `  curl -fsSL '${origin}/v1/binary-url?target=aarch64-apple-darwin&version=0.1.0'`,
+    'Newest published release tag — installable binaries (plain text):',
+    `  curl -fsSL '${origin}/v1/release-tag'`,
+    '',
+    'Newest git tag on the repo (may lack GitHub Release assets):',
+    `  curl -fsSL '${origin}/v1/newest-tag'`,
+    '',
+    'After install:',
+    '- Run `authdog` in a terminal for the interactive TUI (or `authdog tui`). Use `authdog --help` for the full command list.',
     '',
     'Notes:',
-    '- Omitting version prefers the latest stable release; prereleases are used only when no stable exists yet.',
-    '- Linux: set AUTHDOG_CLI_USE_MUSL=1 before piping install for static musl builds (x86_64 / aarch64 only).',
+    '- Installer prompts on a TTY before download (use /dev/tty when piped from curl). Skip with AUTHDOG_CLI_YES=1.',
+    '- Latest install uses the newest **published** GitHub Release, not bare git tags. If a newer tag exists without release assets, the installer warns.',
+    '- `VAR=1 curl … | bash` does not pass VAR to bash; put AUTHDOG_CLI_VERSION before `bash`, use ?version=, or rely on auto latest.',
+    '- Linux: AUTHDOG_CLI_USE_MUSL=1 before `bash` (same piping rule) for musl builds (x86_64 / aarch64).',
     '- Override install dir: INSTALL_DIR=/usr/local/bin (POSIX) or $env:INSTALL_DIR (PowerShell).',
     '',
   ];
@@ -166,8 +247,18 @@ function shellEscapeDouble(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-function installSh(origin: string): Response {
+function installSh(origin: string, queryVersion: string | null): Response {
   const o = shellEscapeDouble(origin);
+  const baked =
+    queryVersion && normalizeVersionParam(queryVersion)
+      ? shellEscapeDouble(normalizeVersionParam(queryVersion)!)
+      : '';
+  const bakedBlock = baked
+    ? `if [ -z "$VERSION" ]; then
+  VERSION="${baked}"
+fi
+`
+    : '';
   const script = `#!/usr/bin/env bash
 # Authdog CLI installer — downloads the GitHub Release binary for this OS/arch.
 set -euo pipefail
@@ -177,6 +268,65 @@ VERSION=""
 if [ -n "\${AUTHDOG_CLI_VERSION:-}" ]; then
   VERSION="\${AUTHDOG_CLI_VERSION}"
 fi
+${bakedBlock}resolve_latest_version() {
+  case "$VERSION" in
+    ""|latest|Latest|LATEST)
+      VERSION="$(curl -fsSL "$BASE/v1/release-tag")"
+      ;;
+  esac
+}
+
+is_pinned_version() {
+  case "$VERSION" in
+    ""|latest|Latest|LATEST) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+confirm_install() {
+  if [ "\${AUTHDOG_CLI_YES:-}" = "1" ] || [ "\${AUTHDOG_CLI_NON_INTERACTIVE:-}" = "1" ]; then
+    return 0
+  fi
+  local reply
+  local prompt="Proceed with install? [y/N] "
+  if [ -t 0 ]; then
+    printf '%s' "$prompt" >&2
+    read -r reply
+  elif [ -r /dev/tty ]; then
+    printf '%s' "$prompt" >/dev/tty
+    read -r reply </dev/tty
+  else
+    echo "error: non-interactive shell; set AUTHDOG_CLI_YES=1 to install without a prompt" >&2
+    exit 1
+  fi
+  case "$reply" in
+    y|Y|yes|Yes|YES) return 0 ;;
+    *)
+      echo "Install cancelled." >&2
+      exit 0
+      ;;
+  esac
+}
+
+print_install_plan() {
+  local dest="\${INSTALL_DIR:-$HOME/.local/bin}"
+  local newest_tag
+  newest_tag="$(curl -fsSL "$BASE/v1/newest-tag" 2>/dev/null || true)"
+  echo "" >&2
+  echo "Authdog CLI install" >&2
+  echo "  Published release:  $VERSION" >&2
+  if [ -n "$newest_tag" ] && [ "$newest_tag" != "$VERSION" ]; then
+    echo "  Newer git tag:      $newest_tag (no installable GitHub Release yet — publish via Release workflow)" >&2
+  fi
+  if [ "$USE_LATEST" = 0 ]; then
+    echo "  Channel:  pinned (may be older than latest published release)" >&2
+  else
+    echo "  Channel:  latest published (GitHub Release with binaries at install time)" >&2
+  fi
+  echo "  Platform: $TARGET" >&2
+  echo "  Install:  $dest" >&2
+  echo "" >&2
+}
 
 detect_target() {
   os="$(uname -s)"
@@ -228,6 +378,11 @@ detect_target() {
 }
 
 TARGET="$(detect_target)"
+USE_LATEST=1
+if is_pinned_version; then USE_LATEST=0; fi
+resolve_latest_version
+print_install_plan
+confirm_install
 QUERY="target=$(printf '%s' "$TARGET" | sed -e 's/+/%2B/g')"
 if [ -n "$VERSION" ]; then
   QUERY="$QUERY&version=$(printf '%s' "$VERSION" | sed -e 's/+/%2B/g')"
@@ -263,14 +418,17 @@ if [ ! -f "$SOURCE" ]; then
   SOURCE="$TMP/authdog-cli"
 fi
 if [ ! -f "$SOURCE" ]; then
-  echo "Release archive contains neither authdog nor authdog-cli" >&2
+  echo "Release archive does not contain authdog (or legacy authdog-cli) binary" >&2
   exit 1
 fi
 install -m 0755 "$SOURCE" "$DEST/authdog"
-install -m 0755 "$SOURCE" "$DEST/authdog-cli"
 
-echo "Installed authdog → $DEST/authdog"
-echo "Compatibility command → $DEST/authdog-cli"
+echo ""
+echo "Installed authdog $VERSION → $DEST/authdog"
+if [ "$USE_LATEST" = 1 ]; then
+  echo "You installed the latest published release (resolved via $BASE/v1/release-tag)."
+fi
+echo "Run \`authdog\` in a terminal for the interactive UI, or \`authdog --help\` for commands."
 case ":$PATH:" in
   *:"$DEST":*) ;;
   *)
@@ -292,14 +450,48 @@ function psEscapeDouble(s: string): string {
   return s.replace(/`/g, '``').replace(/\$/g, '`$').replace(/"/g, '`"');
 }
 
-function installPs1(origin: string): Response {
+function installPs1(origin: string, queryVersion: string | null): Response {
   const o = psEscapeDouble(origin);
+  const baked = queryVersion && normalizeVersionParam(queryVersion) ? psEscapeDouble(queryVersion.trim()) : '';
   const script = `# Authdog CLI installer for Windows (x86_64 MSVC build).
 $ErrorActionPreference = "Stop"
 $Base = "${o}"
 
 $version = $env:AUTHDOG_CLI_VERSION
+if (-not $version -and "${baked}") { $version = "${baked}" }
+$pinned = $false
+if ($version -and $version -ne "latest") { $pinned = $true }
+if (-not $version -or $version -eq "latest") {
+  $version = (Invoke-WebRequest -Uri "$Base/v1/release-tag" -UseBasicParsing).Content.Trim()
+  $pinned = $false
+}
 $target = "x86_64-pc-windows-msvc"
+$dest = $env:INSTALL_DIR
+if (-not $dest) {
+  $dest = Join-Path $env:LOCALAPPDATA "Programs\\authdog"
+}
+Write-Host ""
+$newestTag = try { (Invoke-WebRequest -Uri "$Base/v1/newest-tag" -UseBasicParsing).Content.Trim() } catch { "" }
+Write-Host "Authdog CLI install"
+Write-Host "  Published release:  $version"
+if ($newestTag -and $newestTag -ne $version) {
+  Write-Host "  Newer git tag:      $newestTag (no installable GitHub Release yet — publish via Release workflow)"
+}
+if ($pinned) {
+  Write-Host "  Channel:  pinned (may be older than latest published release)"
+} else {
+  Write-Host "  Channel:  latest published (GitHub Release with binaries at install time)"
+}
+Write-Host "  Platform: $target"
+Write-Host "  Install:  $dest"
+Write-Host ""
+if ($env:AUTHDOG_CLI_YES -ne "1" -and $env:AUTHDOG_CLI_NON_INTERACTIVE -ne "1") {
+  $reply = Read-Host "Proceed with install? [y/N]"
+  if ($reply -notmatch '(?i)^(y|yes)$') {
+    Write-Host "Install cancelled."
+    exit 0
+  }
+}
 $query = "target=$target"
 if ($version) { $query += "&version=$([uri]::EscapeDataString($version))" }
 
@@ -311,24 +503,22 @@ try {
   Invoke-WebRequest -Uri $url -OutFile $zip
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
 
-  $dest = $env:INSTALL_DIR
-  if (-not $dest) {
-    $dest = Join-Path $env:LOCALAPPDATA "Programs\\authdog"
-  }
   New-Item -ItemType Directory -Path $dest -Force | Out-Null
   $exe = Join-Path $tmp "authdog.exe"
   if (-not (Test-Path $exe)) {
     $exe = Join-Path $tmp "authdog-cli.exe"
   }
   if (-not (Test-Path $exe)) {
-    throw "Release archive contains neither authdog.exe nor authdog-cli.exe"
+    throw "Release archive does not contain authdog.exe (or legacy authdog-cli.exe)"
   }
   $out = Join-Path $dest "authdog.exe"
-  $compat = Join-Path $dest "authdog-cli.exe"
   Copy-Item -Force $exe $out
-  Copy-Item -Force $exe $compat
-  Write-Host "Installed authdog → $out"
-  Write-Host "Compatibility command → $compat"
+  Write-Host ""
+  Write-Host "Installed authdog $version → $out"
+  if (-not $pinned) {
+    Write-Host "You installed the latest published release (resolved via $Base/v1/release-tag)."
+  }
+  Write-Host "Run authdog in a terminal for the interactive UI, or authdog --help for commands."
   Write-Host "Add to PATH if needed: $dest"
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
@@ -343,10 +533,33 @@ try {
   });
 }
 
+async function releaseTag(env: Env): Promise<Response> {
+  const repo = env.GITHUB_REPO.trim();
+  try {
+    const release = await fetchGithubRelease(repo, null);
+    return plain(release.tag_name, 200);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return json({ error: msg }, 502);
+  }
+}
+
+async function newestGitTag(env: Env): Promise<Response> {
+  const repo = env.GITHUB_REPO.trim();
+  try {
+    const tag = await fetchNewestGitTag(repo);
+    if (!tag) return json({ error: 'no git tags' }, 502);
+    return plain(tag, 200);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return json({ error: msg }, 502);
+  }
+}
+
 async function binaryUrl(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const targetRaw = url.searchParams.get('target');
-  const version = url.searchParams.get('version');
+  const version = normalizeVersionParam(url.searchParams.get('version'));
 
   if (!targetRaw || !isReleaseTarget(targetRaw)) {
     return json(
@@ -388,9 +601,13 @@ export default {
         return plain('ok');
       case '/install':
       case '/install.sh':
-        return installSh(origin);
+        return installSh(origin, url.searchParams.get('version'));
       case '/install.ps1':
-        return installPs1(origin);
+        return installPs1(origin, url.searchParams.get('version'));
+      case '/v1/release-tag':
+        return releaseTag(env);
+      case '/v1/newest-tag':
+        return newestGitTag(env);
       case '/v1/binary-url':
         return binaryUrl(req, env);
       default:

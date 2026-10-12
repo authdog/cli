@@ -75,6 +75,7 @@ Written by `init` / `link`; read by all project-scoped commands.
 | Module | Responsibility |
 |--------|----------------|
 | `src/cli.zig` | Top-level routing, global flags, help |
+| `src/tui.zig` | Optional full-screen TUI when invoked with no subcommand (TTY) or `authdog tui` |
 | `src/login.zig`, `src/session.zig` | Unchanged responsibilities |
 | `src/api/client.zig` | HTTPS client, bearer injection, token refresh hook, JSON decode helpers |
 | `src/api/openapi.zig` | Optional: pinned path constants generated from `/v1/openapi` in CI |
@@ -113,7 +114,14 @@ authdog
 │   ├── install
 │   ├── list
 │   └── uninstall
-├── doctor
+├── doctor             # --mcp, --agent-sign-in
+├── agent
+│   ├── doctor
+│   ├── prove          # requires --accept-disclosure
+│   ├── rp-init        # management GraphQL; login + linked project
+│   └── wait           # --poll; optional headless redirect capture
+├── device
+│   └── authorize      # RFC 8628; --poll, --issuer, client env
 └── (future) api …
 ```
 
@@ -305,6 +313,7 @@ authdog webhooks listen --forward http://127.0.0.1:3000/webhooks/authdog [--envi
 | Token valid | `GET /v1/userinfo` |
 | Linked project | manifest parse + optional `GET …/applications/{id}` |
 | MCP endpoint | optional `--mcp` |
+| Agent Sign-In key + issuer | optional `--agent-sign-in` (same signal as `authdog agent doctor`) |
 
 Output table (text) or structured json array `{ name, ok, detail }`.
 
@@ -327,17 +336,11 @@ Base: `{apiOrigin}/v1` with `Authorization: Bearer {access_token}`.
 | Security / go-live | `…/security/posture`, `…/vanity-domains` |
 | OpenAPI | `GET /openapi` |
 
-### 8.1 Platform gap — SDK config REST endpoint
+### 8.1 SDK config REST endpoint (satisfied)
 
-MCP already exposes **`getSdkConfig`** (`platform-next/services/api/src/mcp/tools/oidc/getSdkConfig.ts`) combining public key, recommended OIDC client, endpoints, and env-var hints.
+**Shipped:** `GET /v1/tenants/{tenantId}/environments/{environmentId}/sdk-config?projectId={applicationId}` on `api.authdog.com` returns the same aggregate as MCP `getSdkConfig` (public key, recommended OIDC `clientId`, endpoints, env-var hints; no secrets).
 
-**Requirement:** Add REST parity, e.g.
-
-`GET /v1/tenants/{tenantId}/environments/{environmentId}/sdk-config`
-
-…returning the same shape as MCP (no secrets). CLI **must not** depend on MCP for `init` (simpler auth, no MCP scope coupling).
-
-**Alternative (interim):** CLI composes via multiple REST calls + `GET /v1/graphql` public GraphQL — only if documented; prefer dedicated REST.
+**CLI:** `authdog init` loads wiring via this REST route (`src/sdk_config.zig`). OpenAPI contract pin: `platform-next/specs/025-authdog-cli-enhancements/contracts/openapi-sdk-config-pin.json`.
 
 ---
 
@@ -371,9 +374,9 @@ Snippets ship embedded in CLI release artifact (generated in CI from `sdk-snippe
 |-------|--------|---------|
 | **P0** | `api` client, refresh token, `whoami`, `link`, `doctor`, manifest | CLI talks to production API reliably |
 | **P1** | `init` (nextjs + express first), SDK REST endpoint in API repo | One-command app bootstrap |
-| **P2** | `config pull`, `webhooks verify`, `webhooks listen` phase A | Day-2 dev workflows |
-| **P3** | `impersonate`, `deploy status` | Support & go-live |
-| **P4** | `mcp install`, `config patch`, starter templates | Agent-first UX parity |
+| **P2** | `config pull`, `config diff`, `config patch --dry-run`, `webhooks verify`, `webhooks listen` (poll + `--forward`) | Day-2 dev workflows (025 T017 checkpoint in platform-next `specs/025-authdog-cli-enhancements/contracts/`) |
+| **P3** | `impersonate`, `deploy status` | Support & go-live (025 T018) |
+| **P4** | `mcp install`, `config patch`, starter templates | MCP install shipped; `config patch` applies session + redirect URIs; starters still open (025 T019) |
 
 ---
 
@@ -402,3 +405,17 @@ Snippets ship embedded in CLI release artifact (generated in CI from `sdk-snippe
 4. Should `init` create a dev environment automatically (`POST …/environments`) or only link existing?
 
 Resolve in API/Identity specs before P1/P2 implementation.
+
+---
+
+## 15. Cross-repo program (platform-next)
+
+Implementation phases above stay authoritative for **this repo**. Acceptance
+criteria, platform API gaps (sdk-config REST, device-grant live bar), and
+**Agent Sign-In CLI** (`authdog agent doctor|prove`, device poll, registered
+RP helper) are tracked in:
+
+`platform-next/specs/025-authdog-cli-enhancements/` (spec, plan, tasks, research).
+
+Interim Bun scripts live in `platform-next/services/openid-server/scripts/agent-signin-*.ts`
+until 025 Wave 1 ships in the Zig binary.

@@ -25,7 +25,7 @@ Optional:
 
 ## GitHub Releases
 
-When a tag like **`0.1.0`** or **`0.1.0-beta.1`** (bare semver — **no** leading **`v`**) is pushed to **`origin`** on GitHub, the **Release** workflow (`.github/workflows/release.yml`) cross-builds **`authdog`**, attaches `authdog-cli-<version>-<target>` archives + **`checksums.sha256`**, and creates/updates that tag’s **[GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)**. Archives include **`authdog`** and a one-release **`authdog-cli`** compatibility copy. Archive names keep the installer target triples (including `x86_64-pc-windows-msvc`). Use **`just tag-push`** (or Actions **Create release tag**) so the tag matches `release.toml` `version` and the **`stable`** flag.
+When a tag like **`0.1.0`** or **`0.1.0-beta.1`** (bare semver — **no** leading **`v`**) is pushed to **`origin`** on GitHub, the **Release** workflow (`.github/workflows/release.yml`) cross-builds **`authdog`**, attaches `authdog-<version>-<target>` archives + **`checksums.sha256`**, and creates/updates that tag’s **[GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)**. Each archive contains the **`authdog`** binary only. Archive names keep the installer target triples (including `x86_64-pc-windows-msvc`). Use **`just tag-push`** (or Actions **Create release tag**) so the tag matches `release.toml` `version` and the **`stable`** flag.
 
 ## Build & run
 
@@ -35,21 +35,25 @@ zig build -Doptimize=ReleaseSafe
 zig build run -- --help
 ```
 
+## Interactive TUI
+
+In a real terminal (stdin and stdout both TTYs), running **`authdog`** with no subcommand opens a full-screen UI: Authdog banner, version metadata, slash commands (`/help`, `/login`, `/status`, …), and a prompt that runs the same commands as the conventional CLI. Use **`authdog tui`** to open it explicitly. Non-interactive contexts (pipes, CI) still print the normal usage text.
+
 ## Commands
 
 ```bash
-authdog login
-authdog status
-authdog logout
-authdog whoami
+authdog login | logout | status | whoami
 authdog link --tenant-id … --application-id … --environment-id …
 authdog init [--dry-run] [--framework nextjs]
-authdog config pull
-authdog doctor [--mcp]
+authdog config pull | diff | patch [--dry-run]
+authdog doctor [--mcp] [--agent-sign-in]
 authdog webhooks verify --secret … --signature … --body '…'
+authdog webhooks listen [--forward URL] [--interval-ms 2000] [--max-polls 60]
 authdog impersonate --user-id …
 authdog deploy status
-authdog mcp install
+authdog mcp install | list | uninstall
+authdog agent doctor | prove --accept-disclosure | rp-init --name … --redirect-uri … | wait --poll
+authdog device authorize --poll   # CLIENT_ID, CLIENT_SECRET, ISSUER or linked project
 ```
 
 Use **`--json`** or **`-o json`** anywhere in the command line for machine-readable output:

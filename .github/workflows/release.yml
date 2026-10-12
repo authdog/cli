@@ -28,7 +28,7 @@ permissions:
   contents: write
 
 env:
-  ASSET_PREFIX: authdog-cli
+  ASSET_PREFIX: authdog
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
@@ -88,20 +88,16 @@ jobs:
             mkdir -p "${stage}"
             if [[ "${triple}" == *windows* ]]; then
               cp zig-out/bin/authdog.exe "${stage}/authdog.exe"
-              cp zig-out/bin/authdog.exe "${stage}/authdog-cli.exe"
               outfile="${ASSET_PREFIX}-${VERSION}-${triple}.zip"
-              tar -acf "dist/${outfile}" -C "${stage}" authdog.exe authdog-cli.exe
+              tar -acf "dist/${outfile}" -C "${stage}" authdog.exe
               tar -tf "dist/${outfile}" | tee dist/archive-contents.txt
               grep -Fx authdog.exe dist/archive-contents.txt
-              grep -Fx authdog-cli.exe dist/archive-contents.txt
             else
               cp zig-out/bin/authdog "${stage}/authdog"
-              cp zig-out/bin/authdog "${stage}/authdog-cli"
               outfile="${ASSET_PREFIX}-${VERSION}-${triple}.tar.gz"
-              tar czf "dist/${outfile}" -C "${stage}" authdog authdog-cli
+              tar czf "dist/${outfile}" -C "${stage}" authdog
               tar tzf "dist/${outfile}" | tee dist/archive-contents.txt
               grep -Fx authdog dist/archive-contents.txt
-              grep -Fx authdog-cli dist/archive-contents.txt
             fi
             rm -rf "${stage}" dist/archive-contents.txt
           done

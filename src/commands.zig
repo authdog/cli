@@ -10,6 +10,7 @@ const out = @import("out.zig");
 const project = @import("project.zig");
 const sdk_config = @import("sdk_config.zig");
 const session = @import("session.zig");
+const agent = @import("agent.zig");
 
 pub const LinkOptions = struct {
     tenant_id: ?[]const u8 = null,
@@ -41,10 +42,22 @@ pub const WebhooksVerifyOptions = struct {
 pub const WebhooksListenOptions = struct {
     forward: ?[]const u8 = null,
     interval_ms: u32 = 2000,
+    max_polls: u32 = 60,
+};
+
+pub const ConfigPatchOptions = struct {
+    dry_run: bool = false,
+};
+
+const EnvConfigBundle = struct {
+    session: []const u8,
+    redirect: []const u8,
+    webhooks: []const u8,
 };
 
 pub const DoctorOptions = struct {
     check_mcp: bool = false,
+    check_agent_sign_in: bool = false,
 };
 
 pub const McpSub = enum { install, list, uninstall };
@@ -294,24 +307,28 @@ pub fn runInit(
     };
     defer proj.deinit(allocator);
 
-    const identity_host = proj.identityOrigin;
-    const public_key = try sdk_config.buildPublicKey(allocator, proj.tenantId, proj.environmentId, identity_host);
-    defer allocator.free(public_key);
-
     const auth = auth_session.requireAuth(allocator, io, environ, opts.api_origin) catch {
         try out.fail(allocator, io, opts.format, "not logged in; run `authdog login`");
     };
     defer auth_session.deinitAuth(allocator, auth);
 
-    const oidc_path = try sdk_config.fetchOidcClientsPath(allocator, proj.tenantId, proj.applicationId, proj.environmentId);
-    defer allocator.free(oidc_path);
-    const oidc_resp = try api.getJson(allocator, io, auth.api_origin, oidc_path, auth.access_token);
-    defer allocator.free(oidc_resp.body);
-    const client_id = if (oidc_resp.status >= 200 and oidc_resp.status < 300)
-        try sdk_config.pickRecommendedClientId(allocator, oidc_resp.body)
-    else
-        null;
-    defer if (client_id) |id| allocator.free(id);
+    const sdk_path = try sdk_config.fetchSdkConfigPath(
+        allocator,
+        proj.tenantId,
+        proj.environmentId,
+        proj.applicationId,
+    );
+    defer allocator.free(sdk_path);
+    const sdk_resp = try api.getJson(allocator, io, auth.api_origin, sdk_path, auth.access_token);
+    defer allocator.free(sdk_resp.body);
+    if (sdk_resp.status < 200 or sdk_resp.status >= 300) {
+        try api.reportApiFailure(allocator, io, opts.format, sdk_resp);
+    }
+
+    const wiring = try sdk_config.parseSdkConfigResponse(allocator, sdk_resp.body);
+    defer sdk_config.deinitSdkWiring(allocator, wiring);
+    const public_key = wiring.public_key;
+    const client_id = wiring.client_id;
 
     const env_target = init_opts.env_file orelse ".env.local";
     const env_lines = try buildEnvLines(allocator, framework, public_key, client_id);
@@ -439,6 +456,55 @@ fn spawnArgv(io: std.Io, argv: []const []const u8) !void {
     }
 }
 
+fn fetchEnvironmentConfigBundle(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    format: globals.OutputFormat,
+    auth: auth_session.AuthContext,
+    linked: project.LinkedProject,
+) !EnvConfigBundle {
+    const session_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/session-config", .{ linked.tenantId, linked.environmentId });
+    defer allocator.free(session_path);
+    const redirect_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/applications/{s}/environments/{s}/redirect-uris", .{ linked.tenantId, linked.applicationId, linked.environmentId });
+    defer allocator.free(redirect_path);
+    const webhooks_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/webhooks", .{ linked.tenantId, linked.environmentId });
+    defer allocator.free(webhooks_path);
+
+    const session_resp = try api.getJson(allocator, io, auth.api_origin, session_path, auth.access_token);
+    const redirect_resp = try api.getJson(allocator, io, auth.api_origin, redirect_path, auth.access_token);
+    const webhooks_resp = try api.getJson(allocator, io, auth.api_origin, webhooks_path, auth.access_token);
+    if (session_resp.status < 200 or session_resp.status >= 300) {
+        defer allocator.free(session_resp.body);
+        try api.reportApiFailure(allocator, io, format, session_resp);
+    }
+    if (redirect_resp.status < 200 or redirect_resp.status >= 300) {
+        defer allocator.free(session_resp.body);
+        defer allocator.free(redirect_resp.body);
+        try api.reportApiFailure(allocator, io, format, redirect_resp);
+    }
+    if (webhooks_resp.status < 200 or webhooks_resp.status >= 300) {
+        defer allocator.free(session_resp.body);
+        defer allocator.free(redirect_resp.body);
+        defer allocator.free(webhooks_resp.body);
+        try api.reportApiFailure(allocator, io, format, webhooks_resp);
+    }
+    return .{
+        .session = session_resp.body,
+        .redirect = redirect_resp.body,
+        .webhooks = webhooks_resp.body,
+    };
+}
+
+fn formatConfigDocument(allocator: std.mem.Allocator, bundle: EnvConfigBundle) ![]const u8 {
+    var doc: std.Io.Writer.Allocating = .init(allocator);
+    errdefer doc.deinit();
+    try doc.writer.print(
+        "{{\n  \"schemaVersion\": 1,\n  \"sessionConfig\": {s},\n  \"redirectUris\": {s},\n  \"webhooks\": {s}\n}}\n",
+        .{ bundle.session, bundle.redirect, bundle.webhooks },
+    );
+    return doc.toOwnedSlice();
+}
+
 pub fn runConfigPull(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -455,29 +521,19 @@ pub fn runConfigPull(
     const linked = try requireLinked(allocator, io, opts.format, project_path);
     defer linked.deinit(allocator);
 
-    const session_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/session-config", .{ linked.tenantId, linked.environmentId });
-    defer allocator.free(session_path);
-    const redirect_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/applications/{s}/environments/{s}/redirect-uris", .{ linked.tenantId, linked.applicationId, linked.environmentId });
-    defer allocator.free(redirect_path);
-    const webhooks_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/webhooks", .{ linked.tenantId, linked.environmentId });
-    defer allocator.free(webhooks_path);
+    const bundle = try fetchEnvironmentConfigBundle(allocator, io, opts.format, auth, linked);
+    defer {
+        allocator.free(bundle.session);
+        allocator.free(bundle.redirect);
+        allocator.free(bundle.webhooks);
+    }
 
-    const session_resp = try api.getJson(allocator, io, auth.api_origin, session_path, auth.access_token);
-    defer allocator.free(session_resp.body);
-    const redirect_resp = try api.getJson(allocator, io, auth.api_origin, redirect_path, auth.access_token);
-    defer allocator.free(redirect_resp.body);
-    const webhooks_resp = try api.getJson(allocator, io, auth.api_origin, webhooks_path, auth.access_token);
-    defer allocator.free(webhooks_resp.body);
+    const doc = try formatConfigDocument(allocator, bundle);
+    defer allocator.free(doc);
 
     const config_path = globals.default_config_file;
     try std.Io.Dir.cwd().createDirPath(io, ".authdog");
-    var doc: std.Io.Writer.Allocating = .init(allocator);
-    defer doc.deinit();
-    try doc.writer.print(
-        "{{\n  \"schemaVersion\": 1,\n  \"sessionConfig\": {s},\n  \"redirectUris\": {s},\n  \"webhooks\": {s}\n}}\n",
-        .{ session_resp.body, redirect_resp.body, webhooks_resp.body },
-    );
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = doc.written() });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = doc });
 
     try out.emit(allocator, io, opts.format, "Pulled config to .authdog/config.json", .{
         .schemaVersion = 1,
@@ -489,20 +545,148 @@ pub fn runConfigPull(
 pub fn runConfigDiff(
     allocator: std.mem.Allocator,
     io: std.Io,
+    environ: *const std.process.Environ.Map,
     opts: globals.GlobalOptions,
 ) !void {
     const config_path = globals.default_config_file;
     const local = std.Io.Dir.cwd().readFileAlloc(io, config_path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => {
-            try out.fail(allocator, io, opts.format, "missing .authdog/config.json; run `authdog config pull`");
-        },
+        error.FileNotFound => try out.fail(allocator, io, opts.format, "missing .authdog/config.json; run `authdog config pull`"),
         else => return err,
     };
     defer allocator.free(local);
-    try out.emit(allocator, io, opts.format, "Local config present (live diff not yet implemented).", .{
+
+    const auth = auth_session.requireAuth(allocator, io, environ, opts.api_origin) catch {
+        try out.fail(allocator, io, opts.format, "not logged in; run `authdog login`");
+    };
+    defer auth_session.deinitAuth(allocator, auth);
+
+    const project_path = try project.resolvePath(allocator, opts);
+    defer allocator.free(project_path);
+    const linked = try requireLinked(allocator, io, opts.format, project_path);
+    defer linked.deinit(allocator);
+
+    const bundle = try fetchEnvironmentConfigBundle(allocator, io, opts.format, auth, linked);
+    defer {
+        allocator.free(bundle.session);
+        allocator.free(bundle.redirect);
+        allocator.free(bundle.webhooks);
+    }
+    const live = try formatConfigDocument(allocator, bundle);
+    defer allocator.free(live);
+
+    const matches = std.mem.eql(u8, local, live);
+    try out.emit(allocator, io, opts.format, if (matches) "Local config matches live." else "Local config differs from live.", .{
         .schemaVersion = 1,
         .ok = true,
-        .bytes = local.len,
+        .matches = matches,
+        .localBytes = local.len,
+        .liveBytes = live.len,
+    });
+}
+
+pub fn runConfigPatch(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ: *const std.process.Environ.Map,
+    opts: globals.GlobalOptions,
+    patch: ConfigPatchOptions,
+) !void {
+    const config_path = globals.default_config_file;
+    const local = std.Io.Dir.cwd().readFileAlloc(io, config_path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => try out.fail(allocator, io, opts.format, "missing .authdog/config.json; run `authdog config pull`"),
+        else => return err,
+    };
+    defer allocator.free(local);
+
+    const LocalFile = struct {
+        sessionConfig: ?struct {
+            config: ?std.json.Value = null,
+        } = null,
+        redirectUris: ?struct {
+            config: ?struct {
+                successRedirectUri: ?[]const u8 = null,
+                errorRedirectUri: ?[]const u8 = null,
+            } = null,
+        } = null,
+    };
+    const parsed = try std.json.parseFromSlice(LocalFile, allocator, local, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    var actions: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (actions.items) |a| allocator.free(a);
+        actions.deinit(allocator);
+    }
+
+    if (parsed.value.sessionConfig != null) {
+        try actions.append(allocator, try allocator.dupe(u8, "session-config"));
+    }
+    if (parsed.value.redirectUris != null) {
+        try actions.append(allocator, try allocator.dupe(u8, "redirect-uris"));
+    }
+    if (actions.items.len == 0) {
+        try out.fail(allocator, io, opts.format, "config file has nothing to patch (sessionConfig / redirectUris)");
+    }
+
+    if (patch.dry_run) {
+        try out.emit(allocator, io, opts.format, "Dry run: would apply patches.", .{
+            .schemaVersion = 1,
+            .ok = true,
+            .dryRun = true,
+            .actions = actions.items,
+        });
+        return;
+    }
+
+    const auth = auth_session.requireAuth(allocator, io, environ, opts.api_origin) catch {
+        try out.fail(allocator, io, opts.format, "not logged in; run `authdog login`");
+    };
+    defer auth_session.deinitAuth(allocator, auth);
+
+    const project_path = try project.resolvePath(allocator, opts);
+    defer allocator.free(project_path);
+    const linked = try requireLinked(allocator, io, opts.format, project_path);
+    defer linked.deinit(allocator);
+
+    if (parsed.value.sessionConfig) |session_wrap| {
+        const config_obj = session_wrap.config orelse try out.fail(allocator, io, opts.format, "sessionConfig.config missing in local file");
+        var body_buf: std.Io.Writer.Allocating = .init(allocator);
+        defer body_buf.deinit();
+        try body_buf.writer.print("{f}", .{std.json.fmt(config_obj, .{})});
+        const path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/session-config", .{ linked.tenantId, linked.environmentId });
+        defer allocator.free(path);
+        const url = try api.joinUrl(allocator, auth.api_origin, path);
+        defer allocator.free(url);
+        const resp = try api.fetch(allocator, io, .PUT, url, auth.access_token, body_buf.written());
+        defer allocator.free(resp.body);
+        if (resp.status < 200 or resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, resp);
+    }
+
+    if (parsed.value.redirectUris) |redirect_wrap| {
+        const cfg = redirect_wrap.config orelse try out.fail(allocator, io, opts.format, "redirectUris.config missing in local file");
+        const success = cfg.successRedirectUri orelse try out.fail(allocator, io, opts.format, "redirectUris.config.successRedirectUri missing");
+        var body_buf: std.Io.Writer.Allocating = .init(allocator);
+        defer body_buf.deinit();
+        try body_buf.writer.writeAll("{\"successRedirectUri\":");
+        try body_buf.writer.print("{f}", .{std.json.fmt(success, .{})});
+        if (cfg.errorRedirectUri) |err_uri| {
+            try body_buf.writer.writeAll(",\"errorRedirectUri\":");
+            try body_buf.writer.print("{f}", .{std.json.fmt(err_uri, .{})});
+        }
+        try body_buf.writer.writeAll("}");
+        const path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/redirect-uris", .{ linked.tenantId, linked.environmentId });
+        defer allocator.free(path);
+        const url = try api.joinUrl(allocator, auth.api_origin, path);
+        defer allocator.free(url);
+        const resp = try api.fetch(allocator, io, .PUT, url, auth.access_token, body_buf.written());
+        defer allocator.free(resp.body);
+        if (resp.status < 200 or resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, resp);
+    }
+
+    try out.emit(allocator, io, opts.format, "Applied config patch from local file.", .{
+        .schemaVersion = 1,
+        .ok = true,
+        .actions = actions.items,
     });
 }
 
@@ -560,6 +744,15 @@ fn hmacToHexLower(mac: *const [32]u8, hex_out: *[64]u8) usize {
     return 64;
 }
 
+fn pollSleep(io: std.Io, interval_ms: u32) !void {
+    const ns: i96 = @as(i96, interval_ms) * std.time.ns_per_ms;
+    const d = std.Io.Clock.Duration{
+        .raw = .{ .nanoseconds = ns },
+        .clock = .boot,
+    };
+    try d.sleep(io);
+}
+
 pub fn runWebhooksListen(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -567,7 +760,6 @@ pub fn runWebhooksListen(
     opts: globals.GlobalOptions,
     listen: WebhooksListenOptions,
 ) !void {
-    _ = listen;
     const auth = auth_session.requireAuth(allocator, io, environ, opts.api_origin) catch {
         try out.fail(allocator, io, opts.format, "not logged in; run `authdog login`");
     };
@@ -578,16 +770,62 @@ pub fn runWebhooksListen(
     const linked = try requireLinked(allocator, io, opts.format, project_path);
     defer linked.deinit(allocator);
 
-    const path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/webhooks/deliveries?limit=10", .{ linked.tenantId, linked.environmentId });
+    const path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/webhooks/deliveries?limit=20", .{ linked.tenantId, linked.environmentId });
     defer allocator.free(path);
-    const resp = try api.getJson(allocator, io, auth.api_origin, path, auth.access_token);
-    defer allocator.free(resp.body);
-    if (resp.status < 200 or resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, resp);
 
-    try out.emit(allocator, io, opts.format, "Recent webhook deliveries fetched.", .{
+    var seen: std.StringHashMap(void) = .init(allocator);
+    defer seen.deinit();
+
+    var forwarded: u32 = 0;
+    var polls: u32 = 0;
+    const max_polls = if (listen.forward != null) listen.max_polls else 1;
+
+    while (polls < max_polls) : (polls += 1) {
+        const resp = try api.getJson(allocator, io, auth.api_origin, path, auth.access_token);
+        defer allocator.free(resp.body);
+        if (resp.status < 200 or resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, resp);
+
+        const Delivery = struct {
+            id: ?[]const u8 = null,
+            eventType: ?[]const u8 = null,
+            status: ?[]const u8 = null,
+        };
+        const parsed = try std.json.parseFromSlice(struct {
+            data: ?[]Delivery = null,
+        }, allocator, resp.body, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        if (parsed.value.data) |items| {
+            for (items) |item| {
+                const id = item.id orelse continue;
+                if (seen.contains(id)) continue;
+                try seen.put(id, {});
+
+                if (listen.forward) |forward_url| {
+                    var payload: std.Io.Writer.Allocating = .init(allocator);
+                    defer payload.deinit();
+                    try payload.writer.print("{f}", .{std.json.fmt(.{
+                        .deliveryId = id,
+                        .eventType = item.eventType,
+                        .status = item.status,
+                    }, .{})});
+                    const fwd = try api.postJson(allocator, io, forward_url, "", payload.written());
+                    defer allocator.free(fwd.body);
+                    if (fwd.status >= 200 and fwd.status < 300) forwarded += 1;
+                }
+            }
+        }
+
+        if (polls + 1 < max_polls) try pollSleep(io, listen.interval_ms);
+    }
+
+    try out.emit(allocator, io, opts.format, "Webhook delivery poll complete.", .{
         .schemaVersion = 1,
         .ok = true,
-        .deliveries = resp.body,
+        .polls = polls,
+        .trackedDeliveries = seen.count(),
+        .forwarded = forwarded,
+        .forward = listen.forward,
     });
 }
 
@@ -706,8 +944,7 @@ pub fn runDoctor(
     opts: globals.GlobalOptions,
     doctor: DoctorOptions,
 ) !void {
-    const Check = struct { name: []const u8, ok: bool, detail: []const u8 };
-    var checks: std.ArrayList(Check) = .empty;
+    var checks: std.ArrayList(agent.DoctorCheck) = .empty;
     defer {
         for (checks.items) |c| allocator.free(c.detail);
         checks.deinit(allocator);
@@ -752,6 +989,10 @@ pub fn runDoctor(
             .ok = mcp.status >= 200 and mcp.status < 300,
             .detail = try std.fmt.allocPrint(allocator, "HTTP {d}", .{mcp.status}),
         });
+    }
+
+    if (doctor.check_agent_sign_in) {
+        try agent.appendAgentSignInDoctorChecks(allocator, io, environ, opts, &checks);
     }
 
     const all_ok = blk: {
@@ -839,7 +1080,7 @@ fn upsertCursorMcpConfig(allocator: std.mem.Allocator, io: std.Io, path: []const
         \\    }
         \\  }
         \\}
-        ;
+    ;
     const replaced = try std.mem.replaceOwned(u8, std.heap.page_allocator, snippet, "URL_PLACEHOLDER", url);
     defer std.heap.page_allocator.free(replaced);
 

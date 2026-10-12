@@ -14,4 +14,4 @@ preview_urls = false
 
 [vars]
 GITHUB_REPO = "authdog/cli"
-BIN_NAME = "authdog-cli"
+BIN_NAME = "authdog"

@@ -2,6 +2,7 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
+const fs_util = @import("fs_util.zig");
 
 pub const StoredSession = struct {
     access_token: []const u8,
@@ -106,13 +107,13 @@ pub fn saveSessionTo(io: std.Io, path: []const u8, session: StoredSession) !void
     defer parent_dir.close(io);
 
     var atomic_file = try parent_dir.createFileAtomic(io, base, .{
-        .permissions = privateFileMode(),
+        .permissions = fs_util.privateFileMode(),
         .replace = true,
     });
     defer atomic_file.deinit(io);
 
     if (builtin.os.tag != .windows) {
-        try atomic_file.file.setPermissions(io, privateFileMode());
+        try atomic_file.file.setPermissions(io, fs_util.privateFileMode());
     }
 
     var write_buf: [256]u8 = undefined;
@@ -134,11 +135,6 @@ pub fn clearSessionAt(io: std.Io, path: []const u8) !void {
         error.FileNotFound => return,
         else => return err,
     };
-}
-
-fn privateFileMode() std.Io.File.Permissions {
-    if (builtin.os.tag == .windows) return .default_file;
-    return .fromMode(0o600);
 }
 
 test "stored session json roundtrip" {

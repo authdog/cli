@@ -91,6 +91,68 @@ pub fn fetchOidcClientsPath(
     );
 }
 
+const SdkConfigResp = struct {
+    publicKey: ?[]const u8 = null,
+    clientId: ?[]const u8 = null,
+};
+
+/// REST aggregate (025 T007/T009) — same shape as MCP `get_sdk_config`.
+pub fn fetchSdkConfigPath(
+    allocator: std.mem.Allocator,
+    tenant_id: []const u8,
+    environment_id: []const u8,
+    application_id: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "/v1/tenants/{s}/environments/{s}/sdk-config?projectId={s}",
+        .{ tenant_id, environment_id, application_id },
+    );
+}
+
+pub fn parseSdkConfigResponse(allocator: std.mem.Allocator, body: []const u8) !SdkWiring {
+    const parsed = try std.json.parseFromSlice(SdkConfigResp, allocator, body, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    const pk = parsed.value.publicKey orelse {
+        return error.MissingPublicKey;
+    };
+    if (pk.len == 0) return error.MissingPublicKey;
+
+    const public_key = try allocator.dupe(u8, pk);
+    errdefer allocator.free(public_key);
+
+    var client_id: ?[]const u8 = null;
+    if (parsed.value.clientId) |id| {
+        if (id.len != 0) {
+            client_id = try allocator.dupe(u8, id);
+        }
+    }
+
+    return .{
+        .public_key = public_key,
+        .client_id = client_id,
+    };
+}
+
+pub fn deinitSdkWiring(allocator: std.mem.Allocator, wiring: SdkWiring) void {
+    allocator.free(wiring.public_key);
+    if (wiring.client_id) |id| allocator.free(id);
+}
+
+test "parseSdkConfigResponse extracts publicKey and clientId" {
+    const body =
+        \\{"publicKey":"pk_test","clientId":"abc123","warnings":[]}
+    ;
+    const wiring = try parseSdkConfigResponse(std.testing.allocator, body);
+    defer deinitSdkWiring(std.testing.allocator, wiring);
+    try std.testing.expectEqualStrings("pk_test", wiring.public_key);
+    try std.testing.expect(wiring.client_id != null);
+    try std.testing.expectEqualStrings("abc123", wiring.client_id.?);
+}
+
 test "buildPublicKey prefix" {
     const pk = try buildPublicKey(
         std.testing.allocator,

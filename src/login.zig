@@ -462,7 +462,7 @@ fn looksLikeGrant(value: []const u8) bool {
     return true;
 }
 
-fn percentEncode(input: []const u8, out: []u8) usize {
+pub fn percentEncode(input: []const u8, out: []u8) usize {
     const hex = "0123456789ABCDEF";
     var n: usize = 0;
     for (input) |byte| {

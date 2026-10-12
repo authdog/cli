@@ -1,6 +1,7 @@
 //! `.authdog/project.json` link manifest.
 
 const std = @import("std");
+const fs_util = @import("fs_util.zig");
 const globals = @import("globals.zig");
 const login = @import("login.zig");
 
@@ -57,7 +58,7 @@ pub fn save(io: std.Io, path: []const u8, project: LinkedProject) !void {
     defer parent_dir.close(io);
 
     var atomic = try parent_dir.createFileAtomic(io, base, .{
-        .permissions = .fromMode(0o644),
+        .permissions = fs_util.sharedFileMode(),
         .replace = true,
     });
     defer atomic.deinit(io);

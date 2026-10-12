@@ -27,6 +27,7 @@ fn checkHelp(allocator: std.mem.Allocator, io: std.Io, exe: []const u8) !void {
     try expectContains(result.stdout, "status");
     try expectContains(result.stdout, "whoami");
     try expectContains(result.stdout, "doctor");
+    try expectContains(result.stdout, "agent doctor");
     try expectContains(result.stdout, "--output");
 }
 

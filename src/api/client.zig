@@ -92,6 +92,49 @@ pub fn postJson(
     return fetch(allocator, io, .POST, url, bearer, body);
 }
 
+/// POST `application/x-www-form-urlencoded` (OAuth token/device endpoints).
+pub fn postForm(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    url: []const u8,
+    authorization: ?[]const u8,
+    form_body: []const u8,
+) !Response {
+    var client: std.http.Client = .{
+        .allocator = allocator,
+        .io = io,
+    };
+    defer client.deinit();
+
+    var response_buf: std.Io.Writer.Allocating = .init(allocator);
+    defer response_buf.deinit();
+
+    var headers: [2]std.http.Header = undefined;
+    var header_len: usize = 1;
+    headers[0] = .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" };
+    if (authorization) |value| {
+        if (value.len != 0) {
+            headers[header_len] = .{ .name = "Authorization", .value = value };
+            header_len += 1;
+        }
+    }
+
+    const fetched = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = .POST,
+        .payload = form_body,
+        .keep_alive = false,
+        .extra_headers = headers[0..header_len],
+        .response_writer = &response_buf.writer,
+    });
+
+    const body = try allocator.dupe(u8, response_buf.written());
+    return .{
+        .status = @intFromEnum(fetched.status),
+        .body = body,
+    };
+}
+
 pub fn expect2xx(resp: Response) !void {
     if (resp.status >= 200 and resp.status < 300) return;
     return error.ApiFailed;

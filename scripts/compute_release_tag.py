@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Compute the next release git tag from release.toml (version + stable)."""
+"""Compute release git tags from release.toml (version + stable)."""
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import subprocess
@@ -64,6 +65,14 @@ def _max_beta_suffix(root: str, base: str) -> int:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--for-push",
+        action="store_true",
+        help="tag to push after `just tag` (latest beta suffix), not the next tag to create",
+    )
+    args = parser.parse_args()
+
     root = _repo_root()
     release_path = os.path.join(root, "release.toml")
     with open(release_path, "rb") as f:
@@ -83,7 +92,11 @@ def main() -> None:
         print(tag)
         return
 
-    n = _max_beta_suffix(root, version) + 1
+    max_n = _max_beta_suffix(root, version)
+    n = max_n if args.for_push else max_n + 1
+    if n < 1:
+        print("error: no release tag to push; run \"just tag\" first.", file=sys.stderr)
+        sys.exit(2)
     tag = f"{version}-beta.{n}"
     print(tag)
 

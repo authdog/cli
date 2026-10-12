@@ -7,6 +7,8 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     options.addOption([]const u8, "version", release.version);
+    options.addOption([]const u8, "git_sha", readGitSha(b));
+    options.addOption([]const u8, "build_label", "Oct-2026");
     _ = release.stable;
 
     const exe = b.addExecutable(.{
@@ -98,6 +100,34 @@ fn readRelease(b: *std.Build) ReleaseInfo {
         .version = version orelse @panic("release.toml is missing version"),
         .stable = stable,
     };
+}
+
+fn readGitSha(b: *std.Build) []const u8 {
+    const head = b.build_root.handle.readFileAlloc(
+        b.graph.io,
+        ".git/HEAD",
+        b.allocator,
+        .limited(256),
+    ) catch return b.dupe("unknown");
+    defer b.allocator.free(head);
+    const head_line = std.mem.trim(u8, head, " \t\r\n");
+    const ref_suffix = if (std.mem.startsWith(u8, head_line, "ref: "))
+        std.mem.trim(u8, head_line["ref: ".len..], " \t\r\n")
+    else
+        return b.dupe(if (head_line.len >= 7) head_line[0..7] else "unknown");
+
+    const ref_path = b.pathJoin(&.{ ".git", ref_suffix });
+
+    const sha = b.build_root.handle.readFileAlloc(
+        b.graph.io,
+        ref_path,
+        b.allocator,
+        .limited(64),
+    ) catch return b.dupe("unknown");
+    defer b.allocator.free(sha);
+    const trimmed = std.mem.trim(u8, sha, " \t\r\n");
+    if (trimmed.len < 7) return b.dupe("unknown");
+    return b.dupe(trimmed[0..7]);
 }
 
 fn parseTomlString(b: *std.Build, line: []const u8) []const u8 {

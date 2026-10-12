@@ -6,6 +6,8 @@ const session = @import("session.zig");
 const globals = @import("globals.zig");
 const out = @import("out.zig");
 const commands = @import("commands.zig");
+const agent = @import("agent.zig");
+const device = @import("device.zig");
 const auth_session = @import("auth_session.zig");
 
 pub const OutputFormat = globals.OutputFormat;
@@ -20,13 +22,18 @@ pub const Command = union(enum) {
     init: commands.InitOptions,
     config_pull,
     config_diff,
-    config_patch,
+    config_patch: commands.ConfigPatchOptions,
     webhooks_verify: commands.WebhooksVerifyOptions,
     webhooks_listen: commands.WebhooksListenOptions,
     impersonate: commands.ImpersonateOptions,
     deploy_status,
     doctor: commands.DoctorOptions,
     mcp: commands.McpSub,
+    agent_doctor: agent.DoctorOptions,
+    agent_prove: agent.ProveOptions,
+    agent_rp_init: agent.RpInitOptions,
+    agent_wait: agent.WaitOptions,
+    device_authorize: device.AuthorizeOptions,
 };
 
 pub const Invocation = union(enum) {
@@ -78,6 +85,20 @@ pub fn run(init: std.process.Init) !u8 {
     }
 }
 
+pub fn helpText() []const u8 {
+    return help_text;
+}
+
+pub fn executeCommand(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ: *std.process.Environ.Map,
+    opts: globals.GlobalOptions,
+    command: Command,
+) !void {
+    try dispatch(allocator, io, environ, opts, command);
+}
+
 fn dispatch(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -116,14 +137,19 @@ fn dispatch(
         .unlink => try commands.runUnlink(allocator, io, opts),
         .init => |init_opts| try commands.runInit(allocator, io, environ, opts, init_opts),
         .config_pull => try commands.runConfigPull(allocator, io, environ, opts),
-        .config_diff => try commands.runConfigDiff(allocator, io, opts),
-        .config_patch => try out.fail(allocator, io, opts.format, "config patch is not implemented yet"),
+        .config_diff => try commands.runConfigDiff(allocator, io, environ, opts),
+        .config_patch => |patch| try commands.runConfigPatch(allocator, io, environ, opts, patch),
         .webhooks_verify => |verify| try commands.runWebhooksVerify(allocator, io, opts, verify),
         .webhooks_listen => |listen| try commands.runWebhooksListen(allocator, io, environ, opts, listen),
         .impersonate => |imp| try commands.runImpersonate(allocator, io, environ, opts, imp),
         .deploy_status => try commands.runDeployStatus(allocator, io, environ, opts),
         .doctor => |doc| try commands.runDoctor(allocator, io, environ, opts, doc),
         .mcp => |sub| try commands.runMcp(allocator, io, environ, opts, sub),
+        .agent_doctor => |doc| try agent.runDoctor(allocator, io, environ, opts, doc),
+        .agent_prove => |prove| try agent.runProve(allocator, io, environ, opts, prove),
+        .agent_rp_init => |rp| try agent.runRpInit(allocator, io, environ, opts, rp),
+        .agent_wait => |wait| try agent.runWait(allocator, io, environ, opts, wait),
+        .device_authorize => |auth| try device.runAuthorize(allocator, io, environ, opts, auth),
     }
 }
 
@@ -157,7 +183,12 @@ const help_text =
     \\  webhooks verify       Verify an X-Authdog-Signature offline
     \\  impersonate           Mint an impersonation token (requires grant)
     \\  deploy status         Security posture and vanity domain snapshot
-    \\  doctor                Connectivity and auth diagnostics
+    \\  doctor                Connectivity and auth diagnostics (--agent-sign-in)
+    \\  agent doctor          Preflight agent key + issuer (Agent Sign-In)
+    \\  agent prove           Sign waiting-page token and POST …/agents/approve
+    \\  agent rp-init         Register agent_sign_in OIDC client (management GraphQL)
+    \\  agent wait            Poll agents/wait?poll=1 until redirect/code issued
+    \\  device authorize      RFC 8628 device flow (--poll, --issuer, client env)
     \\  mcp install           Register Authdog MCP in Cursor (~/.cursor/mcp.json)
     \\  mcp list                Show MCP install target path
     \\  mcp uninstall           Reserved (does not delete shared config)
@@ -198,9 +229,6 @@ pub fn parse(allocator: std.mem.Allocator, environ: *std.process.Environ.Map, ar
         } else |err| switch (err) {
             error.MissingFlagValue => return .{ .bad = "missing flag value" },
             error.InvalidOutputFormat => return .{ .bad = try std.fmt.allocPrint(allocator, "invalid output format in '{s}'", .{arg}) },
-        }
-        if (std.mem.startsWith(u8, arg, "-")) {
-            return .{ .bad = try std.fmt.allocPrint(allocator, "unexpected argument '{s}'", .{arg}) };
         }
         try command_args.append(allocator, arg);
         index += 1;
@@ -289,6 +317,8 @@ fn parseCommand(allocator: std.mem.Allocator, args: []const []const u8, index: *
     if (std.mem.eql(u8, head, "impersonate") or std.mem.eql(u8, head, "imp")) return try parseImpersonate(allocator, args, index);
     if (std.mem.eql(u8, head, "deploy")) return try parseDeploy(args, index);
     if (std.mem.eql(u8, head, "doctor")) return try parseDoctor(args, index);
+    if (std.mem.eql(u8, head, "agent")) return try parseAgent(allocator, args, index);
+    if (std.mem.eql(u8, head, "device")) return try parseDevice(allocator, args, index);
     if (std.mem.eql(u8, head, "mcp")) return try parseMcp(args, index);
     if (std.mem.eql(u8, head, "auth")) return try parseAuth(args, index);
     return error.UnrecognizedCommand;
@@ -374,7 +404,15 @@ fn parseConfig(args: []const []const u8, index: *usize) ParseCommandError!Comman
     const sub = args[index.*];
     if (std.mem.eql(u8, sub, "pull")) return .config_pull;
     if (std.mem.eql(u8, sub, "diff")) return .config_diff;
-    if (std.mem.eql(u8, sub, "patch")) return .config_patch;
+    if (std.mem.eql(u8, sub, "patch")) {
+        var patch: commands.ConfigPatchOptions = .{};
+        index.* += 1;
+        while (index.* < args.len and std.mem.eql(u8, args[index.*], "--dry-run")) {
+            patch.dry_run = true;
+            index.* += 1;
+        }
+        return .{ .config_patch = patch };
+    }
     return error.MissingSubcommand;
 }
 
@@ -385,10 +423,30 @@ fn parseWebhooks(allocator: std.mem.Allocator, args: []const []const u8, index: 
     if (std.mem.eql(u8, sub, "listen")) {
         var listen: commands.WebhooksListenOptions = .{};
         index.* += 1;
-        while (index.* + 1 < args.len and std.mem.eql(u8, args[index.*], "--forward")) {
-            index.* += 1;
-            listen.forward = args[index.*];
-            index.* += 1;
+        while (index.* < args.len) {
+            const flag = args[index.*];
+            if (std.mem.eql(u8, flag, "--forward")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                listen.forward = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--interval-ms")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                listen.interval_ms = std.fmt.parseInt(u32, args[index.*], 10) catch return error.MissingFlagValue;
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--max-polls")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                listen.max_polls = std.fmt.parseInt(u32, args[index.*], 10) catch return error.MissingFlagValue;
+                index.* += 1;
+                continue;
+            }
+            break;
         }
         return .{ .webhooks_listen = listen };
     }
@@ -467,12 +525,192 @@ fn parseDeploy(args: []const []const u8, index: *usize) ParseCommandError!Comman
     return error.MissingSubcommand;
 }
 
+fn parseDevice(allocator: std.mem.Allocator, args: []const []const u8, index: *usize) ParseCommandError!Command {
+    index.* += 1;
+    if (index.* >= args.len) return error.MissingSubcommand;
+    const sub = args[index.*];
+    if (!std.mem.eql(u8, sub, "authorize")) return error.MissingSubcommand;
+    var auth: device.AuthorizeOptions = .{};
+    index.* += 1;
+    while (index.* < args.len) {
+        const flag = args[index.*];
+        if (std.mem.eql(u8, flag, "--poll")) {
+            auth.poll = true;
+            index.* += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, flag, "--no-poll")) {
+            auth.poll = false;
+            index.* += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, flag, "--client-id")) {
+            index.* += 1;
+            if (index.* >= args.len) return error.MissingFlagValue;
+            auth.client_id = args[index.*];
+            index.* += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, flag, "--client-secret")) {
+            index.* += 1;
+            if (index.* >= args.len) return error.MissingFlagValue;
+            auth.client_secret = args[index.*];
+            index.* += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, flag, "--issuer")) {
+            index.* += 1;
+            if (index.* >= args.len) return error.MissingFlagValue;
+            auth.issuer = args[index.*];
+            index.* += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, flag, "--scope")) {
+            index.* += 1;
+            if (index.* >= args.len) return error.MissingFlagValue;
+            auth.scope = args[index.*];
+            index.* += 1;
+            continue;
+        }
+        break;
+    }
+    _ = allocator;
+    return .{ .device_authorize = auth };
+}
+
+fn parseAgent(allocator: std.mem.Allocator, args: []const []const u8, index: *usize) ParseCommandError!Command {
+    index.* += 1;
+    if (index.* >= args.len) return error.MissingSubcommand;
+    const sub = args[index.*];
+    if (std.mem.eql(u8, sub, "doctor")) {
+        index.* += 1;
+        return .{ .agent_doctor = .{} };
+    }
+    if (std.mem.eql(u8, sub, "rp-init")) {
+        var rp: agent.RpInitOptions = .{};
+        index.* += 1;
+        while (index.* < args.len) {
+            const flag = args[index.*];
+            if (std.mem.eql(u8, flag, "--name")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                rp.client_name = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--redirect-uri")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                if (rp.redirect_count >= rp.redirect_storage.len) return error.MissingFlagValue;
+                rp.redirect_storage[rp.redirect_count] = args[index.*];
+                rp.redirect_count += 1;
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--no-manifest")) {
+                rp.write_manifest = false;
+                index.* += 1;
+                continue;
+            }
+            break;
+        }
+        _ = allocator;
+        return .{ .agent_rp_init = rp };
+    }
+    if (std.mem.eql(u8, sub, "wait")) {
+        var wait: agent.WaitOptions = .{};
+        index.* += 1;
+        while (index.* < args.len) {
+            const flag = args[index.*];
+            if (std.mem.eql(u8, flag, "--poll")) {
+                wait.poll = true;
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--no-poll")) {
+                wait.poll = false;
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--auth-token")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                wait.auth_token = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            break;
+        }
+        return .{ .agent_wait = wait };
+    }
+    if (std.mem.eql(u8, sub, "prove")) {
+        var prove: agent.ProveOptions = .{};
+        index.* += 1;
+        while (index.* < args.len) {
+            const flag = args[index.*];
+            if (std.mem.eql(u8, flag, "--accept-disclosure")) {
+                prove.accept_disclosure = true;
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--key")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                prove.key_path = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--kid")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                prove.kid = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--auth-token")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                prove.auth_token = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--identity-host")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                prove.identity_host = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--environment-id")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                prove.environment_id = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            break;
+        }
+        return .{ .agent_prove = prove };
+    }
+    return error.MissingSubcommand;
+}
+
 fn parseDoctor(args: []const []const u8, index: *usize) ParseCommandError!Command {
     var doc: commands.DoctorOptions = .{};
     index.* += 1;
-    while (index.* < args.len and std.mem.eql(u8, args[index.*], "--mcp")) {
-        doc.check_mcp = true;
-        index.* += 1;
+    while (index.* < args.len and std.mem.startsWith(u8, args[index.*], "--")) {
+        const flag = args[index.*];
+        if (std.mem.eql(u8, flag, "--mcp")) {
+            doc.check_mcp = true;
+            index.* += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, flag, "--agent-sign-in")) {
+            doc.check_agent_sign_in = true;
+            index.* += 1;
+            continue;
+        }
+        break;
     }
     return .{ .doctor = doc };
 }
@@ -526,4 +764,15 @@ test "parses whoami" {
     defer env.deinit();
     const parsed = try parse(std.testing.allocator, &env, &.{"whoami"});
     try std.testing.expect(parsed.run.command == .whoami);
+}
+
+test "parses agent prove flags" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const parsed = try parse(std.testing.allocator, &env, &.{
+        "agent", "prove", "--accept-disclosure", "--kid", "kid-1",
+    });
+    try std.testing.expect(parsed.run.command == .agent_prove);
+    try std.testing.expect(parsed.run.command.agent_prove.accept_disclosure);
+    try std.testing.expectEqualStrings("kid-1", parsed.run.command.agent_prove.kid.?);
 }
