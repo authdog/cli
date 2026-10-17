@@ -51,7 +51,7 @@ authdog webhooks verify --secret … --signature … --body '…'
 authdog webhooks listen [--forward URL] [--interval-ms 2000] [--max-polls 60]
 authdog impersonate --user-id … | impersonate revoke --grant-id …
 authdog deploy status
-authdog mcp install | list | uninstall
+authdog mcp install | list | uninstall [--client cursor|claude|vscode|codex | --all]
 authdog agent doctor | prove --accept-disclosure | rp-init --name … --redirect-uri … | wait --poll
 authdog device authorize --poll   # CLIENT_ID, CLIENT_SECRET, ISSUER or linked project
 ```

@@ -11,6 +11,8 @@ const project = @import("project.zig");
 const sdk_config = @import("sdk_config.zig");
 const session = @import("session.zig");
 const agent = @import("agent.zig");
+const mcp_config = @import("mcp_config.zig");
+const fs_util = @import("fs_util.zig");
 
 pub const LinkOptions = struct {
     tenant_id: ?[]const u8 = null,
@@ -75,7 +77,15 @@ pub const DoctorOptions = struct {
     check_agent_sign_in: bool = false,
 };
 
-pub const McpSub = enum { install, list, uninstall };
+pub const McpCommand = struct {
+    action: enum { install, list, uninstall } = .install,
+    client: ?mcp_config.Client = null,
+    all: bool = false,
+};
+
+pub fn parseMcpClient(name: []const u8) ?mcp_config.Client {
+    return mcp_config.parseClient(name);
+}
 
 fn requireLinked(
     allocator: std.mem.Allocator,
@@ -1264,58 +1274,60 @@ pub fn runMcp(
     io: std.Io,
     environ: *const std.process.Environ.Map,
     opts: globals.GlobalOptions,
-    sub: McpSub,
+    sub: McpCommand,
 ) !void {
-    const home = environ.get("HOME") orelse {
+    const paths = mcpOsPaths(environ) catch {
         try out.fail(allocator, io, opts.format, "HOME is not set");
     };
-    if (home.len == 0) try out.fail(allocator, io, opts.format, "HOME is not set");
-    const config_path = try std.fs.path.join(allocator, &.{ home, ".cursor", "mcp.json" });
-    defer allocator.free(config_path);
-
     const mcp_url = try api.joinUrl(allocator, opts.api_origin, "/mcp");
     defer allocator.free(mcp_url);
 
-    switch (sub) {
-        .list => {
-            const exists = try mcpConfigExists(io, config_path);
-            try out.emit(allocator, io, opts.format, "Cursor MCP config.", .{
-                .schemaVersion = 1,
-                .ok = true,
-                .configPath = config_path,
-                .exists = exists,
-                .serverUrl = mcp_url,
-            });
-        },
-        .install => {
-            const written = upsertCursorMcpConfig(allocator, io, config_path, mcp_url) catch |err| switch (err) {
-                error.InvalidJson => try out.fail(allocator, io, opts.format, "mcp config is not valid JSON"),
-                else => return err,
-            };
-            defer freeNameList(allocator, written.preserved);
-            try out.emit(allocator, io, opts.format, "Registered Authdog MCP in Cursor config.", .{
-                .schemaVersion = 1,
-                .ok = true,
-                .configPath = config_path,
-                .serverUrl = mcp_url,
-                .preservedServers = written.preserved,
-            });
-        },
-        .uninstall => {
-            const written = removeCursorMcpConfig(allocator, io, config_path) catch |err| switch (err) {
-                error.InvalidJson => try out.fail(allocator, io, opts.format, "mcp config is not valid JSON"),
-                else => return err,
-            };
-            defer freeNameList(allocator, written.preserved);
-            try out.emit(allocator, io, opts.format, "Removed Authdog MCP from Cursor config.", .{
-                .schemaVersion = 1,
-                .ok = true,
-                .configPath = config_path,
-                .removed = written.removed,
-                .preservedServers = written.preserved,
-            });
-        },
+    if (sub.action == .list) {
+        try listMcpClients(allocator, io, opts, paths, sub, mcp_url);
+        return;
     }
+
+    const multi = sub.all or (sub.client != null and sub.client.? != .cursor);
+    if (!multi) {
+        const config_path = try mcp_config.configPath(allocator, paths, .cursor);
+        defer allocator.free(config_path);
+        switch (sub.action) {
+            .list => unreachable,
+            .install => {
+                const written = upsertCursorMcpConfig(allocator, io, config_path, mcp_url) catch |err| switch (err) {
+                    error.InvalidJson => try out.fail(allocator, io, opts.format, "mcp config is not valid JSON"),
+                    error.StreamTooLong => try out.fail(allocator, io, opts.format, "mcp config is too large"),
+                    else => return err,
+                };
+                defer freeNameList(allocator, written.preserved);
+                try out.emit(allocator, io, opts.format, "Registered Authdog MCP in Cursor config.", .{
+                    .schemaVersion = 1,
+                    .ok = true,
+                    .configPath = config_path,
+                    .serverUrl = mcp_url,
+                    .preservedServers = written.preserved,
+                });
+            },
+            .uninstall => {
+                const written = removeCursorMcpConfig(allocator, io, config_path) catch |err| switch (err) {
+                    error.InvalidJson => try out.fail(allocator, io, opts.format, "mcp config is not valid JSON"),
+                    error.StreamTooLong => try out.fail(allocator, io, opts.format, "mcp config is too large"),
+                    else => return err,
+                };
+                defer freeNameList(allocator, written.preserved);
+                try out.emit(allocator, io, opts.format, "Removed Authdog MCP from Cursor config.", .{
+                    .schemaVersion = 1,
+                    .ok = true,
+                    .configPath = config_path,
+                    .removed = written.removed,
+                    .preservedServers = written.preserved,
+                });
+            },
+        }
+        return;
+    }
+
+    try applyMcpClients(allocator, io, opts, paths, sub, mcp_url);
 }
 
 fn mcpConfigExists(io: std.Io, path: []const u8) !bool {
@@ -1343,16 +1355,9 @@ fn upsertCursorMcpConfig(
     path: []const u8,
     url: []const u8,
 ) !McpWrite {
-    const existing = try readOptionalFile(allocator, io, path);
-    defer if (existing) |bytes| allocator.free(bytes);
-    const source = if (existing) |bytes| if (bytes.len == 0) "{}" else bytes else "{}";
-    const merged = try mergeAuthdogServer(allocator, source, url);
-    defer allocator.free(merged.doc);
-    writeConfigFile(io, path, merged.doc) catch |err| {
-        freeNameList(allocator, merged.preserved);
-        return err;
-    };
-    return .{ .preserved = merged.preserved };
+    const written = try editMcpFile(allocator, io, .cursor, path, url, false);
+    defer allocator.free(written.doc);
+    return .{ .preserved = written.preserved };
 }
 
 fn removeCursorMcpConfig(
@@ -1360,19 +1365,322 @@ fn removeCursorMcpConfig(
     io: std.Io,
     path: []const u8,
 ) !McpWrite {
-    const existing = try readOptionalFile(allocator, io, path);
-    const bytes = existing orelse return .{ .preserved = try allocator.alloc([]u8, 0) };
-    defer allocator.free(bytes);
-    if (bytes.len == 0) return .{ .preserved = try allocator.alloc([]u8, 0) };
-    const stripped = try stripAuthdogServer(allocator, bytes);
-    defer allocator.free(stripped.doc);
-    if (stripped.removed) {
-        writeConfigFile(io, path, stripped.doc) catch |err| {
-            freeNameList(allocator, stripped.preserved);
+    const written = try editMcpFile(allocator, io, .cursor, path, "", true);
+    defer allocator.free(written.doc);
+    return .{ .preserved = written.preserved, .removed = written.removed };
+}
+
+const McpSlot = struct {
+    name: []const u8,
+    path: []u8,
+    doc: ?[]u8 = null,
+    preserved: [][]u8,
+    status: []const u8,
+    removed: bool = false,
+    write: bool = false,
+
+    fn deinit(self: *McpSlot, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        if (self.doc) |doc| allocator.free(doc);
+        freeNameList(allocator, self.preserved);
+    }
+};
+
+fn mcpOsPaths(environ: *const std.process.Environ.Map) !mcp_config.OsPaths {
+    const home = environ.get("HOME") orelse return error.NoHome;
+    if (home.len == 0) return error.NoHome;
+    const config_home = environ.get("XDG_CONFIG_HOME") orelse "";
+    return .{
+        .home = home,
+        .config_home = if (config_home.len != 0) config_home else home,
+        .appdata = environ.get("APPDATA"),
+    };
+}
+
+fn resolvedConfigHome(allocator: std.mem.Allocator, paths: mcp_config.OsPaths) ![]u8 {
+    if (environConfigIsExplicit(paths)) return allocator.dupe(u8, paths.config_home);
+    return std.fs.path.join(allocator, &.{ paths.home, ".config" });
+}
+
+fn environConfigIsExplicit(paths: mcp_config.OsPaths) bool {
+    return paths.config_home.len != 0 and !std.mem.eql(u8, paths.config_home, paths.home);
+}
+
+fn listMcpClients(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    opts: globals.GlobalOptions,
+    paths: mcp_config.OsPaths,
+    sub: McpCommand,
+    mcp_url: []const u8,
+) !void {
+    const config_home = try resolvedConfigHome(allocator, paths);
+    defer allocator.free(config_home);
+    const os_paths = mcp_config.OsPaths{
+        .home = paths.home,
+        .config_home = config_home,
+        .appdata = paths.appdata,
+    };
+    const selected = selectedClients(sub);
+    const Listed = struct {
+        name: []const u8,
+        configPath: []const u8,
+        installed: bool,
+        authdog: bool,
+        readable: bool,
+    };
+    var rows: [mcp_config.all_clients.len]Listed = undefined;
+    var paths_owned: [mcp_config.all_clients.len][]u8 = undefined;
+    var count: usize = 0;
+    defer {
+        for (paths_owned[0..count]) |path| allocator.free(path);
+    }
+    for (selected) |client| {
+        const path = try mcp_config.configPath(allocator, os_paths, client);
+        paths_owned[count] = path;
+        const installed = mcp_config.isInstalled(allocator, io, os_paths, client) catch false;
+        var authdog = false;
+        var readable = true;
+        if (mcp_config.fileExists(io, path)) {
+            const bytes = readMcpFile(allocator, io, path) catch |err| switch (err) {
+                error.StreamTooLong => blk: {
+                    readable = false;
+                    break :blk null;
+                },
+                else => return err,
+            };
+            if (bytes) |body| {
+                defer allocator.free(body);
+                const presence = mcp_config.inspect(allocator, client, body);
+                readable = presence.readable;
+                authdog = presence.authdog;
+            }
+        }
+        rows[count] = .{
+            .name = mcp_config.clientName(client),
+            .configPath = path,
+            .installed = installed,
+            .authdog = authdog,
+            .readable = readable,
+        };
+        count += 1;
+    }
+    const cursor_path = rows[0].configPath;
+    const exists = mcp_config.fileExists(io, cursor_path);
+    var text: std.Io.Writer.Allocating = .init(allocator);
+    defer text.deinit();
+    for (rows[0..count]) |row| {
+        const mark = if (!row.installed) "not installed" else if (!row.readable) "unreadable" else if (row.authdog) "authdog" else "absent";
+        try text.writer.print("{s}\t{s}\t{s}\n", .{ row.name, row.configPath, mark });
+    }
+    try out.emit(allocator, io, opts.format, text.written(), .{
+        .schemaVersion = 1,
+        .ok = true,
+        .configPath = cursor_path,
+        .exists = exists,
+        .serverUrl = mcp_url,
+        .clients = rows[0..count],
+    });
+}
+
+fn selectedClients(sub: McpCommand) []const mcp_config.Client {
+    if (sub.client) |client| {
+        return switch (client) {
+            .cursor => mcp_config.all_clients[0..1],
+            .claude => mcp_config.all_clients[1..2],
+            .vscode => mcp_config.all_clients[2..3],
+            .codex => mcp_config.all_clients[3..4],
+        };
+    }
+    return &mcp_config.all_clients;
+}
+
+fn applyMcpClients(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    opts: globals.GlobalOptions,
+    paths: mcp_config.OsPaths,
+    sub: McpCommand,
+    mcp_url: []const u8,
+) !void {
+    const config_home = try resolvedConfigHome(allocator, paths);
+    defer allocator.free(config_home);
+    const os_paths = mcp_config.OsPaths{
+        .home = paths.home,
+        .config_home = config_home,
+        .appdata = paths.appdata,
+    };
+    var slots: [mcp_config.all_clients.len]McpSlot = undefined;
+    var count: usize = 0;
+    errdefer {
+        for (slots[0..count]) |*slot| slot.deinit(allocator);
+    }
+    const remove = sub.action == .uninstall;
+    for (mcp_config.all_clients) |client| {
+        const chosen = sub.all or (sub.client != null and sub.client.? == client);
+        if (!chosen) continue;
+        const path = mcp_config.configPath(allocator, os_paths, client) catch {
+            try out.fail(allocator, io, opts.format, "HOME is not set");
+        };
+        const installed = mcp_config.isInstalled(allocator, io, os_paths, client) catch false;
+        if (sub.all and !installed) {
+            slots[count] = .{
+                .name = mcp_config.clientName(client),
+                .path = path,
+                .preserved = try allocator.alloc([]u8, 0),
+                .status = "skipped",
+            };
+            count += 1;
+            continue;
+        }
+        const edited = planMcpEdit(allocator, io, client, path, mcp_url, remove) catch |err| switch (err) {
+            error.InvalidJson => {
+                allocator.free(path);
+                try out.fail(allocator, io, opts.format, "mcp config is not valid JSON");
+            },
+            error.InvalidConfig => {
+                allocator.free(path);
+                try out.fail(allocator, io, opts.format, "mcp config is not valid");
+            },
+            error.StreamTooLong => {
+                allocator.free(path);
+                try out.fail(allocator, io, opts.format, "mcp config is too large");
+            },
+            else => {
+                allocator.free(path);
+                return err;
+            },
+        };
+        const write = !remove or edited.removed;
+        slots[count] = .{
+            .name = mcp_config.clientName(client),
+            .path = path,
+            .doc = edited.doc,
+            .preserved = edited.preserved,
+            .status = if (remove) (if (edited.removed) "removed" else "unchanged") else "installed",
+            .removed = edited.removed,
+            .write = write,
+        };
+        count += 1;
+    }
+
+    var actionable: usize = 0;
+    for (slots[0..count]) |slot| {
+        if (!std.mem.eql(u8, slot.status, "skipped")) actionable += 1;
+    }
+    if (actionable == 0) try out.fail(allocator, io, opts.format, "no MCP clients detected; pass --client");
+
+    for (slots[0..count]) |slot| {
+        if (!slot.write) continue;
+        const mode = try permissionsFor(io, slot.path);
+        try writeConfigFileMode(io, slot.path, slot.doc.?, mode);
+    }
+
+    const Row = struct {
+        name: []const u8,
+        configPath: []const u8,
+        status: []const u8,
+        preservedServers: []const []const u8,
+        removed: bool,
+    };
+    var rows: [mcp_config.all_clients.len]Row = undefined;
+    for (slots[0..count], 0..) |slot, index| {
+        rows[index] = .{
+            .name = slot.name,
+            .configPath = slot.path,
+            .status = slot.status,
+            .preservedServers = slot.preserved,
+            .removed = slot.removed,
+        };
+    }
+    var text: std.Io.Writer.Allocating = .init(allocator);
+    defer text.deinit();
+    for (rows[0..count]) |row| {
+        try text.writer.print("{s}: {s} {s}\n", .{ row.name, row.status, row.configPath });
+    }
+    try out.emit(allocator, io, opts.format, text.written(), .{
+        .schemaVersion = 1,
+        .ok = true,
+        .serverUrl = mcp_url,
+        .clients = rows[0..count],
+    });
+    for (slots[0..count]) |*slot| slot.deinit(allocator);
+    count = 0;
+}
+
+fn planMcpEdit(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    client: mcp_config.Client,
+    path: []const u8,
+    url: []const u8,
+    remove: bool,
+) !mcp_config.Edit {
+    const existing = try readMcpFile(allocator, io, path);
+    defer if (existing) |bytes| allocator.free(bytes);
+    if (remove and (existing == null or existing.?.len == 0)) {
+        return .{ .doc = try allocator.alloc(u8, 0), .preserved = try allocator.alloc([]u8, 0) };
+    }
+    const source = if (existing) |bytes| if (bytes.len == 0) blankConfig(client) else bytes else blankConfig(client);
+    if (client == .codex) {
+        return if (remove)
+            try mcp_config.stripToml(allocator, source)
+        else
+            try mcp_config.mergeToml(allocator, source, url);
+    }
+    const shape = mcp_config.jsonShape(client).?;
+    return if (remove)
+        try mcp_config.stripJson(allocator, source, shape)
+    else
+        try mcp_config.mergeJson(allocator, source, url, shape);
+}
+
+fn editMcpFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    client: mcp_config.Client,
+    path: []const u8,
+    url: []const u8,
+    remove: bool,
+) !mcp_config.Edit {
+    const edited = try planMcpEdit(allocator, io, client, path, url, remove);
+    if (!remove or edited.removed) {
+        const mode = try permissionsFor(io, path);
+        writeConfigFileMode(io, path, edited.doc, mode) catch |err| {
+            mcp_config.freeNames(allocator, edited.preserved);
+            allocator.free(edited.doc);
             return err;
         };
     }
-    return .{ .preserved = stripped.preserved, .removed = stripped.removed };
+    return edited;
+}
+
+fn blankConfig(client: mcp_config.Client) []const u8 {
+    return if (client == .codex) "" else "{}";
+}
+
+fn readMcpFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !?[]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(8 * 1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => |e| return e,
+    };
+}
+
+fn permissionsFor(io: std.Io, path: []const u8) !std.Io.File.Permissions {
+    const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return fs_util.privateFileMode(),
+        else => |e| return e,
+    };
+    return stat.permissions;
+}
+
+fn writeConfigFileMode(io: std.Io, path: []const u8, data: []const u8, permissions: std.Io.File.Permissions) !void {
+    if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(io, dir);
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = path,
+        .data = data,
+        .flags = .{ .permissions = permissions },
+    });
 }
 
 fn readOptionalFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !?[]u8 {

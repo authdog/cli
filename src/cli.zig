@@ -28,7 +28,7 @@ pub const Command = union(enum) {
     impersonate: commands.ImpersonateOptions,
     deploy_status,
     doctor: commands.DoctorOptions,
-    mcp: commands.McpSub,
+    mcp: commands.McpCommand,
     agent_doctor: agent.DoctorOptions,
     agent_prove: agent.ProveOptions,
     agent_rp_init: agent.RpInitOptions,
@@ -190,9 +190,9 @@ const help_text =
     \\  agent rp-init         Register agent_sign_in OIDC client (management GraphQL)
     \\  agent wait            Poll agents/wait?poll=1 until redirect/code issued
     \\  device authorize      RFC 8628 device flow (--poll, --issuer, client env)
-    \\  mcp install           Register Authdog MCP in Cursor (~/.cursor/mcp.json)
-    \\  mcp list                Show MCP install target path
-    \\  mcp uninstall           Remove only the Authdog MCP server entry
+    \\  mcp install           Register Authdog MCP (default: Cursor; --client, --all)
+    \\  mcp list              Show Cursor, Claude, VS Code, and Codex config paths
+    \\  mcp uninstall         Remove only the Authdog MCP entry (--client, --all)
     \\
     \\  auth login|logout|status   Aliases for login, logout, status
     \\
@@ -242,6 +242,9 @@ pub fn parse(allocator: std.mem.Allocator, environ: *std.process.Environ.Map, ar
         error.UnrecognizedCommand => return .{ .bad = try std.fmt.allocPrint(allocator, "unrecognized command '{s}'", .{command_args.items[0]}) },
         error.MissingSubcommand => return .{ .bad = "missing subcommand" },
         error.MissingFlagValue => return .{ .bad = "missing required flag or value" },
+        error.InvalidMcpClient => return .{ .bad = "invalid mcp client; expected cursor, claude, vscode, or codex" },
+        error.McpFlagConflict => return .{ .bad = "--client and --all cannot be combined" },
+        error.UnrecognizedMcpFlag => return .{ .bad = "unrecognized mcp flag" },
     };
     return .{ .run = .{ .globals = opts, .command = command } };
 }
@@ -302,6 +305,9 @@ const ParseCommandError = error{
     UnrecognizedCommand,
     MissingSubcommand,
     MissingFlagValue,
+    InvalidMcpClient,
+    McpFlagConflict,
+    UnrecognizedMcpFlag,
 };
 
 fn parseCommand(allocator: std.mem.Allocator, args: []const []const u8, index: *usize) ParseCommandError!Command {
@@ -743,10 +749,34 @@ fn parseMcp(args: []const []const u8, index: *usize) ParseCommandError!Command {
     index.* += 1;
     if (index.* >= args.len) return error.MissingSubcommand;
     const sub = args[index.*];
-    if (std.mem.eql(u8, sub, "install")) return .{ .mcp = .install };
-    if (std.mem.eql(u8, sub, "list")) return .{ .mcp = .list };
-    if (std.mem.eql(u8, sub, "uninstall")) return .{ .mcp = .uninstall };
-    return error.MissingSubcommand;
+    var command = commands.McpCommand{};
+    if (std.mem.eql(u8, sub, "install")) {
+        command.action = .install;
+    } else if (std.mem.eql(u8, sub, "list")) {
+        command.action = .list;
+    } else if (std.mem.eql(u8, sub, "uninstall")) {
+        command.action = .uninstall;
+    } else return error.MissingSubcommand;
+    index.* += 1;
+    while (index.* < args.len) {
+        const flag = args[index.*];
+        if (std.mem.eql(u8, flag, "--all")) {
+            if (command.client != null) return error.McpFlagConflict;
+            command.all = true;
+            index.* += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, flag, "--client")) {
+            if (command.all) return error.McpFlagConflict;
+            index.* += 1;
+            if (index.* >= args.len) return error.MissingFlagValue;
+            command.client = commands.parseMcpClient(args[index.*]) orelse return error.InvalidMcpClient;
+            index.* += 1;
+            continue;
+        }
+        return error.UnrecognizedMcpFlag;
+    }
+    return .{ .mcp = command };
 }
 
 fn parseFormat(value: []const u8) ?OutputFormat {
@@ -794,7 +824,7 @@ test "help describes diff and uninstall" {
     try std.testing.expect(std.mem.indexOf(u8, helpText(), "Compare local config (stub)") == null);
     try std.testing.expect(std.mem.indexOf(u8, helpText(), "Reserved (does not delete shared config)") == null);
     try std.testing.expect(std.mem.indexOf(u8, helpText(), "Compare local config sections") != null);
-    try std.testing.expect(std.mem.indexOf(u8, helpText(), "Remove only the Authdog MCP server entry") != null);
+    try std.testing.expect(std.mem.indexOf(u8, helpText(), "Remove only the Authdog MCP entry") != null);
 }
 
 test "parses init package manager" {
@@ -803,6 +833,25 @@ test "parses init package manager" {
     const parsed = try parse(std.testing.allocator, &env, &.{ "init", "--pm", "bun", "--dry-run" });
     try std.testing.expectEqualStrings("bun", parsed.run.command.init.pm.?);
     try std.testing.expect(parsed.run.command.init.dry_run);
+}
+
+test "parses mcp client flags" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const parsed = try parse(std.testing.allocator, &env, &.{ "mcp", "install", "--client", "claude" });
+    try std.testing.expect(parsed.run.command.mcp.action == .install);
+    try std.testing.expect(parsed.run.command.mcp.client.? == .claude);
+    try std.testing.expect(!parsed.run.command.mcp.all);
+
+    const all = try parse(std.testing.allocator, &env, &.{ "mcp", "uninstall", "--all" });
+    try std.testing.expect(all.run.command.mcp.all);
+    try std.testing.expect(all.run.command.mcp.client == null);
+
+    const bad = try parse(std.testing.allocator, &env, &.{ "mcp", "install", "--client", "slack" });
+    try std.testing.expect(bad == .bad);
+
+    const conflict = try parse(std.testing.allocator, &env, &.{ "mcp", "install", "--all", "--client", "cursor" });
+    try std.testing.expect(conflict == .bad);
 }
 
 test "parses impersonate revoke" {
@@ -828,4 +877,5 @@ test {
     _ = commands;
     _ = @import("detect.zig");
     _ = @import("api/client.zig");
+    _ = @import("mcp_config.zig");
 }

@@ -290,11 +290,15 @@ authdog webhooks listen --forward http://127.0.0.1:3000/webhooks/authdog [--envi
 
 **install:**
 
-- Detect installed clients: Cursor, Claude Code, VS Code, Codex, etc. (same strategy as common MCP CLIs: config file paths per OS).
-- Write user-global config (not per-repo): OAuth to Authdog for MCP scopes.
-- Flags: `--all`, `--client cursor`, `--non-interactive`.
+- With no client flag, write Cursor only: `~/.cursor/mcp.json` key `mcpServers`.
+- `--client cursor|claude|vscode|codex` writes that one user-global file. `--all` writes every detected client and skips clients that are not installed.
+- Claude Code: `~/.claude.json` key `mcpServers`, entry `type: http` plus `url`. Other root keys stay.
+- VS Code user profile: `mcp.json` under `Code/User` (`servers`, `type: http`). Linux uses `$XDG_CONFIG_HOME` or `~/.config`.
+- Codex: `~/.codex/config.toml` table `[mcp_servers.authdog]` with `url` only. Other tables stay.
+- The entry is the server URL only. The client performs OAuth when the server challenges. The CLI does not write tokens or Authorization headers.
+- Invalid JSON or a NUL-containing Codex file fails usage and is not rewritten. Existing file mode is kept; a new file is mode `0600`.
 
-**list / uninstall:** Manage entries tagged `authdog` only.
+**list / uninstall:** Manage entries tagged `authdog` only. `list` prints each client path. Uninstall removes the Authdog entry and leaves every other server.
 
 **doctor:** Ping `/.well-known/oauth-protected-resource/mcp` and report reachability.
 
