@@ -74,6 +74,7 @@ pub fn run(init: std.process.Init) !u8 {
         .run => |parsed| {
             dispatch(allocator, io, init.environ_map, parsed.globals, parsed.command) catch |err| switch (err) {
                 error.Reported => return 2,
+                error.SessionExpired => return 3,
                 error.AuthRequired => {
                     try out.errPrint(io, allocator, "not logged in; run `authdog login`", .{});
                     return 3;
@@ -178,10 +179,10 @@ const help_text =
     \\  unlink                Remove .authdog/project.json
     \\  init                  Detect framework, link, and write SDK env vars
     \\  config pull           Pull environment config to .authdog/config.json
-    \\  config diff           Compare local config (stub)
+    \\  config diff           Compare local config sections to the live environment
     \\  webhooks listen       Fetch recent webhook deliveries
     \\  webhooks verify       Verify an X-Authdog-Signature offline
-    \\  impersonate           Mint an impersonation token (requires grant)
+    \\  impersonate           Mint a sign-in URL (revoke --grant-id)
     \\  deploy status         Security posture and vanity domain snapshot
     \\  doctor                Connectivity and auth diagnostics (--agent-sign-in)
     \\  agent doctor          Preflight agent key + issuer (Agent Sign-In)
@@ -191,7 +192,7 @@ const help_text =
     \\  device authorize      RFC 8628 device flow (--poll, --issuer, client env)
     \\  mcp install           Register Authdog MCP in Cursor (~/.cursor/mcp.json)
     \\  mcp list                Show MCP install target path
-    \\  mcp uninstall           Reserved (does not delete shared config)
+    \\  mcp uninstall           Remove only the Authdog MCP server entry
     \\
     \\  auth login|logout|status   Aliases for login, logout, status
     \\
@@ -392,6 +393,13 @@ fn parseInit(allocator: std.mem.Allocator, args: []const []const u8, index: *usi
             index.* += 1;
             continue;
         }
+        if (std.mem.eql(u8, flag, "--pm")) {
+            index.* += 1;
+            if (index.* >= args.len) return error.MissingFlagValue;
+            init_opts.pm = args[index.*];
+            index.* += 1;
+            continue;
+        }
         break;
     }
     _ = allocator;
@@ -487,23 +495,39 @@ fn parseWebhooks(allocator: std.mem.Allocator, args: []const []const u8, index: 
 fn parseImpersonate(allocator: std.mem.Allocator, args: []const []const u8, index: *usize) ParseCommandError!Command {
     var imp: commands.ImpersonateOptions = .{};
     index.* += 1;
-    while (index.* + 1 < args.len) {
+    if (index.* < args.len and std.mem.eql(u8, args[index.*], "revoke")) {
+        imp.revoke = true;
+        imp.create_grant = false;
+        index.* += 1;
+    }
+    while (index.* < args.len) {
         const flag = args[index.*];
+        if (!std.mem.startsWith(u8, flag, "--")) break;
         if (std.mem.eql(u8, flag, "--user-id")) {
             index.* += 1;
+            if (index.* >= args.len) return error.MissingFlagValue;
             imp.user_id = args[index.*];
             index.* += 1;
             continue;
         }
         if (std.mem.eql(u8, flag, "--duration-minutes")) {
             index.* += 1;
+            if (index.* >= args.len) return error.MissingFlagValue;
             imp.duration_minutes = std.fmt.parseInt(u32, args[index.*], 10) catch return error.MissingFlagValue;
             index.* += 1;
             continue;
         }
         if (std.mem.eql(u8, flag, "--reason")) {
             index.* += 1;
+            if (index.* >= args.len) return error.MissingFlagValue;
             imp.reason = args[index.*];
+            index.* += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, flag, "--grant-id")) {
+            index.* += 1;
+            if (index.* >= args.len) return error.MissingFlagValue;
+            imp.grant_id = args[index.*];
             index.* += 1;
             continue;
         }
@@ -766,6 +790,29 @@ test "parses whoami" {
     try std.testing.expect(parsed.run.command == .whoami);
 }
 
+test "help describes diff and uninstall" {
+    try std.testing.expect(std.mem.indexOf(u8, helpText(), "Compare local config (stub)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, helpText(), "Reserved (does not delete shared config)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, helpText(), "Compare local config sections") != null);
+    try std.testing.expect(std.mem.indexOf(u8, helpText(), "Remove only the Authdog MCP server entry") != null);
+}
+
+test "parses init package manager" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const parsed = try parse(std.testing.allocator, &env, &.{ "init", "--pm", "bun", "--dry-run" });
+    try std.testing.expectEqualStrings("bun", parsed.run.command.init.pm.?);
+    try std.testing.expect(parsed.run.command.init.dry_run);
+}
+
+test "parses impersonate revoke" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const parsed = try parse(std.testing.allocator, &env, &.{ "impersonate", "revoke", "--grant-id", "grant-1" });
+    try std.testing.expect(parsed.run.command.impersonate.revoke);
+    try std.testing.expectEqualStrings("grant-1", parsed.run.command.impersonate.grant_id.?);
+}
+
 test "parses agent prove flags" {
     var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
@@ -775,4 +822,10 @@ test "parses agent prove flags" {
     try std.testing.expect(parsed.run.command == .agent_prove);
     try std.testing.expect(parsed.run.command.agent_prove.accept_disclosure);
     try std.testing.expectEqualStrings("kid-1", parsed.run.command.agent_prove.kid.?);
+}
+
+test {
+    _ = commands;
+    _ = @import("detect.zig");
+    _ = @import("api/client.zig");
 }

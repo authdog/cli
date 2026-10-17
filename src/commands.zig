@@ -23,6 +23,7 @@ pub const InitOptions = struct {
     dry_run: bool = false,
     skip_install: bool = false,
     env_file: ?[]const u8 = null,
+    pm: ?[]const u8 = null,
 };
 
 pub const ImpersonateOptions = struct {
@@ -30,6 +31,8 @@ pub const ImpersonateOptions = struct {
     duration_minutes: u32 = 30,
     reason: ?[]const u8 = null,
     create_grant: bool = true,
+    revoke: bool = false,
+    grant_id: ?[]const u8 = null,
 };
 
 pub const WebhooksVerifyOptions = struct {
@@ -53,6 +56,18 @@ const EnvConfigBundle = struct {
     session: []const u8,
     redirect: []const u8,
     webhooks: []const u8,
+    oidc: []const u8,
+};
+
+const nextjs_snippet = @import("snippets").nextjs;
+const express_snippet = @import("snippets").express;
+
+const SectionDiff = struct {
+    matches: bool,
+    sessionConfig: []const u8,
+    redirectUris: []const u8,
+    webhooks: []const u8,
+    oidcClients: []const u8,
 };
 
 pub const DoctorOptions = struct {
@@ -337,6 +352,11 @@ pub fn runInit(
         allocator.free(env_lines);
     }
 
+    const package_manager = resolvePackageManager(io, init_opts.pm, framework) catch {
+        try out.fail(allocator, io, opts.format, "unknown --pm value");
+    };
+    const integration = integrationPlan(io, framework);
+
     if (init_opts.dry_run) {
         try out.emit(allocator, io, opts.format, "Dry run — no files written.", .{
             .schemaVersion = 1,
@@ -345,15 +365,23 @@ pub fn runInit(
             .envFile = env_target,
             .envLines = env_lines,
             .projectFile = project_path,
+            .packageManager = package_manager,
+            .integrationFiles = integration.slice(),
         });
         return;
     }
 
     try mergeEnvFile(allocator, io, env_target, env_lines);
+    for (integration.slice()) |file| {
+        if (std.mem.eql(u8, file.action, "create")) {
+            try applyNewFile(io, file.path, snippetContents(framework));
+        }
+    }
 
     if (!init_opts.skip_install) {
-        if (framework.npmPackage()) |pkg| {
-            try runPackageInstall(io, pkg);
+        const package = framework.npmPackage() orelse framework.pythonPackage();
+        if (package) |pkg| {
+            try runPackageInstall(allocator, io, opts.format, pkg, package_manager);
         }
     }
 
@@ -365,6 +393,8 @@ pub fn runInit(
         .envFile = env_target,
         .publicKeySet = true,
         .clientIdSet = client_id != null,
+        .packageManager = package_manager,
+        .integrationFiles = integration.slice(),
     });
 }
 
@@ -425,21 +455,115 @@ fn fileExists(io: std.Io, name: []const u8) bool {
     return true;
 }
 
-fn runPackageInstall(io: std.Io, package: []const u8) !void {
-    if (fileExists(io, "bun.lock")) {
-        const argv = [_][]const u8{ "bun", "add", package };
-        return spawnArgv(io, &argv);
+const IntegrationFile = struct {
+    path: []const u8,
+    action: []const u8,
+};
+
+const IntegrationPlan = struct {
+    files: [1]IntegrationFile = undefined,
+    len: usize = 0,
+
+    fn slice(self: *const IntegrationPlan) []const IntegrationFile {
+        return self.files[0..self.len];
     }
-    if (fileExists(io, "pnpm-lock.yaml")) {
-        const argv = [_][]const u8{ "pnpm", "add", package };
-        return spawnArgv(io, &argv);
+};
+
+fn isKnownPm(pm: []const u8) bool {
+    const known = [_][]const u8{ "bun", "pnpm", "yarn", "npm", "uv", "pip" };
+    for (known) |name| if (std.mem.eql(u8, pm, name)) return true;
+    return false;
+}
+
+fn resolvePackageManager(io: std.Io, explicit: ?[]const u8, framework: detect.Framework) ![]const u8 {
+    if (explicit) |pm| {
+        if (!isKnownPm(pm)) return error.UnknownPackageManager;
+        return pm;
     }
-    if (fileExists(io, "yarn.lock")) {
-        const argv = [_][]const u8{ "yarn", "add", package };
-        return spawnArgv(io, &argv);
+    if (framework == .fastapi) {
+        if (fileExists(io, "uv.lock")) return "uv";
+        return "pip";
     }
-    const argv = [_][]const u8{ "npm", "install", package };
-    return spawnArgv(io, &argv);
+    if (fileExists(io, "bun.lock")) return "bun";
+    if (fileExists(io, "pnpm-lock.yaml")) return "pnpm";
+    if (fileExists(io, "yarn.lock")) return "yarn";
+    return "npm";
+}
+
+fn snippetDest(framework: detect.Framework) ?[]const u8 {
+    return switch (framework) {
+        .nextjs => "app/authdog-provider.tsx",
+        .express => "authdog.express.ts",
+        else => null,
+    };
+}
+
+fn snippetContents(framework: detect.Framework) []const u8 {
+    return switch (framework) {
+        .nextjs => nextjs_snippet,
+        .express => express_snippet,
+        else => "",
+    };
+}
+
+fn integrationPlan(io: std.Io, framework: detect.Framework) IntegrationPlan {
+    const dest = snippetDest(framework) orelse return .{};
+    const action: []const u8 = if (fileExists(io, dest)) "skip-exists" else "create";
+    return .{
+        .files = .{.{ .path = dest, .action = action }},
+        .len = 1,
+    };
+}
+
+fn applyNewFile(io: std.Io, path: []const u8, contents: []const u8) !void {
+    if (std.fs.path.dirname(path)) |dir| {
+        if (dir.len != 0) try std.Io.Dir.cwd().createDirPath(io, dir);
+    }
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = contents });
+}
+
+fn runPackageInstall(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    format: globals.OutputFormat,
+    package: []const u8,
+    pm: []const u8,
+) !void {
+    var buf: [3][]const u8 = undefined;
+    const argv = installArgv(&buf, pm, package);
+    spawnArgv(io, argv) catch |err| switch (err) {
+        error.FileNotFound => {
+            const message = try std.fmt.allocPrint(allocator, "package manager not found: {s}", .{pm});
+            defer allocator.free(message);
+            try out.fail(allocator, io, format, message);
+        },
+        else => return err,
+    };
+}
+
+fn installArgv(buf: *[3][]const u8, pm: []const u8, package: []const u8) []const []const u8 {
+    if (std.mem.eql(u8, pm, "bun")) {
+        buf.* = .{ "bun", "add", package };
+        return buf;
+    }
+    if (std.mem.eql(u8, pm, "pnpm")) {
+        buf.* = .{ "pnpm", "add", package };
+        return buf;
+    }
+    if (std.mem.eql(u8, pm, "yarn")) {
+        buf.* = .{ "yarn", "add", package };
+        return buf;
+    }
+    if (std.mem.eql(u8, pm, "uv")) {
+        buf.* = .{ "uv", "add", package };
+        return buf;
+    }
+    if (std.mem.eql(u8, pm, "pip")) {
+        buf.* = .{ "pip", "install", package };
+        return buf;
+    }
+    buf.* = .{ "npm", "install", package };
+    return buf;
 }
 
 fn spawnArgv(io: std.Io, argv: []const []const u8) !void {
@@ -469,39 +593,54 @@ fn fetchEnvironmentConfigBundle(
     defer allocator.free(redirect_path);
     const webhooks_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/webhooks", .{ linked.tenantId, linked.environmentId });
     defer allocator.free(webhooks_path);
+    const oidc_path = try sdk_config.fetchOidcClientsPath(allocator, linked.tenantId, linked.applicationId, linked.environmentId);
+    defer allocator.free(oidc_path);
 
     const session_resp = try api.getJson(allocator, io, auth.api_origin, session_path, auth.access_token);
     const redirect_resp = try api.getJson(allocator, io, auth.api_origin, redirect_path, auth.access_token);
     const webhooks_resp = try api.getJson(allocator, io, auth.api_origin, webhooks_path, auth.access_token);
-    if (session_resp.status < 200 or session_resp.status >= 300) {
-        defer allocator.free(session_resp.body);
-        try api.reportApiFailure(allocator, io, format, session_resp);
-    }
-    if (redirect_resp.status < 200 or redirect_resp.status >= 300) {
-        defer allocator.free(session_resp.body);
-        defer allocator.free(redirect_resp.body);
-        try api.reportApiFailure(allocator, io, format, redirect_resp);
-    }
-    if (webhooks_resp.status < 200 or webhooks_resp.status >= 300) {
-        defer allocator.free(session_resp.body);
-        defer allocator.free(redirect_resp.body);
-        defer allocator.free(webhooks_resp.body);
-        try api.reportApiFailure(allocator, io, format, webhooks_resp);
+    const oidc_resp = try api.getJson(allocator, io, auth.api_origin, oidc_path, auth.access_token);
+    const responses = [_]api.Response{ session_resp, redirect_resp, webhooks_resp, oidc_resp };
+    for (responses) |resp| {
+        if (resp.status < 200 or resp.status >= 300) {
+            for (responses) |item| allocator.free(item.body);
+            try api.reportApiFailure(allocator, io, format, resp);
+        }
     }
     return .{
         .session = session_resp.body,
         .redirect = redirect_resp.body,
         .webhooks = webhooks_resp.body,
+        .oidc = oidc_resp.body,
     };
 }
 
-fn formatConfigDocument(allocator: std.mem.Allocator, bundle: EnvConfigBundle) ![]const u8 {
+fn formatConfigDocument(allocator: std.mem.Allocator, bundle: EnvConfigBundle) ![]u8 {
+    const session_json = try parseJsonValue(allocator, bundle.session);
+    defer session_json.deinit();
+    const redirect = try parseJsonValue(allocator, bundle.redirect);
+    defer redirect.deinit();
+    const webhooks = try parseJsonValue(allocator, bundle.webhooks);
+    defer webhooks.deinit();
+    const oidc = try parseJsonValue(allocator, bundle.oidc);
+    defer oidc.deinit();
+
+    var webhooks_value = webhooks.value;
+    var oidc_value = oidc.value;
+    try redactSecrets(allocator, &webhooks_value);
+    try redactSecrets(allocator, &oidc_value);
+
     var doc: std.Io.Writer.Allocating = .init(allocator);
     errdefer doc.deinit();
-    try doc.writer.print(
-        "{{\n  \"schemaVersion\": 1,\n  \"sessionConfig\": {s},\n  \"redirectUris\": {s},\n  \"webhooks\": {s}\n}}\n",
-        .{ bundle.session, bundle.redirect, bundle.webhooks },
-    );
+    try doc.writer.writeAll("{\"schemaVersion\":1,\"sessionConfig\":");
+    try doc.writer.print("{f}", .{std.json.fmt(session_json.value, .{})});
+    try doc.writer.writeAll(",\"redirectUris\":");
+    try doc.writer.print("{f}", .{std.json.fmt(redirect.value, .{})});
+    try doc.writer.writeAll(",\"webhooks\":");
+    try doc.writer.print("{f}", .{std.json.fmt(webhooks_value, .{})});
+    try doc.writer.writeAll(",\"oidcClients\":");
+    try doc.writer.print("{f}", .{std.json.fmt(oidc_value, .{})});
+    try doc.writer.writeAll("}");
     return doc.toOwnedSlice();
 }
 
@@ -526,9 +665,12 @@ pub fn runConfigPull(
         allocator.free(bundle.session);
         allocator.free(bundle.redirect);
         allocator.free(bundle.webhooks);
+        allocator.free(bundle.oidc);
     }
 
-    const doc = try formatConfigDocument(allocator, bundle);
+    const doc = formatConfigDocument(allocator, bundle) catch {
+        try out.fail(allocator, io, opts.format, "config response was not JSON");
+    };
     defer allocator.free(doc);
 
     const config_path = globals.default_config_file;
@@ -570,17 +712,26 @@ pub fn runConfigDiff(
         allocator.free(bundle.session);
         allocator.free(bundle.redirect);
         allocator.free(bundle.webhooks);
+        allocator.free(bundle.oidc);
     }
-    const live = try formatConfigDocument(allocator, bundle);
+    const live = formatConfigDocument(allocator, bundle) catch {
+        try out.fail(allocator, io, opts.format, "config response was not JSON");
+    };
     defer allocator.free(live);
 
-    const matches = std.mem.eql(u8, local, live);
-    try out.emit(allocator, io, opts.format, if (matches) "Local config matches live." else "Local config differs from live.", .{
+    const diff = diffConfigDocuments(allocator, local, live) catch {
+        try out.fail(allocator, io, opts.format, "config file is not valid JSON");
+    };
+    try out.emit(allocator, io, opts.format, if (diff.matches) "Local config matches live." else "Local config differs from live.", .{
         .schemaVersion = 1,
         .ok = true,
-        .matches = matches,
-        .localBytes = local.len,
-        .liveBytes = live.len,
+        .matches = diff.matches,
+        .sections = .{
+            .sessionConfig = diff.sessionConfig,
+            .redirectUris = diff.redirectUris,
+            .webhooks = diff.webhooks,
+            .oidcClients = diff.oidcClients,
+        },
     });
 }
 
@@ -598,6 +749,14 @@ pub fn runConfigPatch(
     };
     defer allocator.free(local);
 
+    const local_value = parseJsonValue(allocator, local) catch {
+        try out.fail(allocator, io, opts.format, "config file is not valid JSON");
+    };
+    defer local_value.deinit();
+    if (containsSecretKey(local_value.value)) {
+        try out.fail(allocator, io, opts.format, "patch_refused");
+    }
+
     const LocalFile = struct {
         sessionConfig: ?struct {
             config: ?std.json.Value = null,
@@ -612,32 +771,6 @@ pub fn runConfigPatch(
     const parsed = try std.json.parseFromSlice(LocalFile, allocator, local, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    var actions: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (actions.items) |a| allocator.free(a);
-        actions.deinit(allocator);
-    }
-
-    if (parsed.value.sessionConfig != null) {
-        try actions.append(allocator, try allocator.dupe(u8, "session-config"));
-    }
-    if (parsed.value.redirectUris != null) {
-        try actions.append(allocator, try allocator.dupe(u8, "redirect-uris"));
-    }
-    if (actions.items.len == 0) {
-        try out.fail(allocator, io, opts.format, "config file has nothing to patch (sessionConfig / redirectUris)");
-    }
-
-    if (patch.dry_run) {
-        try out.emit(allocator, io, opts.format, "Dry run: would apply patches.", .{
-            .schemaVersion = 1,
-            .ok = true,
-            .dryRun = true,
-            .actions = actions.items,
-        });
-        return;
-    }
-
     const auth = auth_session.requireAuth(allocator, io, environ, opts.api_origin) catch {
         try out.fail(allocator, io, opts.format, "not logged in; run `authdog login`");
     };
@@ -648,45 +781,82 @@ pub fn runConfigPatch(
     const linked = try requireLinked(allocator, io, opts.format, project_path);
     defer linked.deinit(allocator);
 
-    if (parsed.value.sessionConfig) |session_wrap| {
-        const config_obj = session_wrap.config orelse try out.fail(allocator, io, opts.format, "sessionConfig.config missing in local file");
-        var body_buf: std.Io.Writer.Allocating = .init(allocator);
-        defer body_buf.deinit();
-        try body_buf.writer.print("{f}", .{std.json.fmt(config_obj, .{})});
-        const path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/session-config", .{ linked.tenantId, linked.environmentId });
-        defer allocator.free(path);
-        const url = try api.joinUrl(allocator, auth.api_origin, path);
-        defer allocator.free(url);
-        const resp = try api.fetch(allocator, io, .PUT, url, auth.access_token, body_buf.written());
-        defer allocator.free(resp.body);
-        if (resp.status < 200 or resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, resp);
+    const bundle = try fetchEnvironmentConfigBundle(allocator, io, opts.format, auth, linked);
+    defer {
+        allocator.free(bundle.session);
+        allocator.free(bundle.redirect);
+        allocator.free(bundle.webhooks);
+        allocator.free(bundle.oidc);
+    }
+    const live = formatConfigDocument(allocator, bundle) catch {
+        try out.fail(allocator, io, opts.format, "config response was not JSON");
+    };
+    defer allocator.free(live);
+    const diff = diffConfigDocuments(allocator, local, live) catch {
+        try out.fail(allocator, io, opts.format, "config file is not valid JSON");
+    };
+    if (!std.mem.eql(u8, diff.oidcClients, "match")) {
+        try out.fail(allocator, io, opts.format, "patch_refused");
+    }
+    const sections = .{
+        .sessionConfig = diff.sessionConfig,
+        .redirectUris = diff.redirectUris,
+        .webhooks = diff.webhooks,
+        .oidcClients = diff.oidcClients,
+    };
+    if (patch.dry_run) {
+        try out.emit(allocator, io, opts.format, "Dry run: would apply patches.", .{
+            .schemaVersion = 1,
+            .ok = true,
+            .dryRun = true,
+            .sections = sections,
+        });
+        return;
     }
 
-    if (parsed.value.redirectUris) |redirect_wrap| {
-        const cfg = redirect_wrap.config orelse try out.fail(allocator, io, opts.format, "redirectUris.config missing in local file");
-        const success = cfg.successRedirectUri orelse try out.fail(allocator, io, opts.format, "redirectUris.config.successRedirectUri missing");
-        var body_buf: std.Io.Writer.Allocating = .init(allocator);
-        defer body_buf.deinit();
-        try body_buf.writer.writeAll("{\"successRedirectUri\":");
-        try body_buf.writer.print("{f}", .{std.json.fmt(success, .{})});
-        if (cfg.errorRedirectUri) |err_uri| {
-            try body_buf.writer.writeAll(",\"errorRedirectUri\":");
-            try body_buf.writer.print("{f}", .{std.json.fmt(err_uri, .{})});
+    if (std.mem.eql(u8, diff.sessionConfig, "differ")) {
+        if (parsed.value.sessionConfig) |session_wrap| {
+            const config_obj = session_wrap.config orelse try out.fail(allocator, io, opts.format, "sessionConfig.config missing in local file");
+            var body_buf: std.Io.Writer.Allocating = .init(allocator);
+            defer body_buf.deinit();
+            try body_buf.writer.print("{f}", .{std.json.fmt(config_obj, .{})});
+            const path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/session-config", .{ linked.tenantId, linked.environmentId });
+            defer allocator.free(path);
+            const url = try api.joinUrl(allocator, auth.api_origin, path);
+            defer allocator.free(url);
+            const resp = try api.fetch(allocator, io, .PUT, url, auth.access_token, body_buf.written());
+            defer allocator.free(resp.body);
+            if (resp.status < 200 or resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, resp);
         }
-        try body_buf.writer.writeAll("}");
-        const path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/redirect-uris", .{ linked.tenantId, linked.environmentId });
-        defer allocator.free(path);
-        const url = try api.joinUrl(allocator, auth.api_origin, path);
-        defer allocator.free(url);
-        const resp = try api.fetch(allocator, io, .PUT, url, auth.access_token, body_buf.written());
-        defer allocator.free(resp.body);
-        if (resp.status < 200 or resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, resp);
+    }
+
+    if (std.mem.eql(u8, diff.redirectUris, "differ")) {
+        if (parsed.value.redirectUris) |redirect_wrap| {
+            const cfg = redirect_wrap.config orelse try out.fail(allocator, io, opts.format, "redirectUris.config missing in local file");
+            const success = cfg.successRedirectUri orelse try out.fail(allocator, io, opts.format, "redirectUris.config.successRedirectUri missing");
+            var body_buf: std.Io.Writer.Allocating = .init(allocator);
+            defer body_buf.deinit();
+            try body_buf.writer.writeAll("{\"successRedirectUri\":");
+            try body_buf.writer.print("{f}", .{std.json.fmt(success, .{})});
+            if (cfg.errorRedirectUri) |err_uri| {
+                try body_buf.writer.writeAll(",\"errorRedirectUri\":");
+                try body_buf.writer.print("{f}", .{std.json.fmt(err_uri, .{})});
+            }
+            try body_buf.writer.writeAll("}");
+            const path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/redirect-uris", .{ linked.tenantId, linked.environmentId });
+            defer allocator.free(path);
+            const url = try api.joinUrl(allocator, auth.api_origin, path);
+            defer allocator.free(url);
+            const resp = try api.fetch(allocator, io, .PUT, url, auth.access_token, body_buf.written());
+            defer allocator.free(resp.body);
+            if (resp.status < 200 or resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, resp);
+        }
     }
 
     try out.emit(allocator, io, opts.format, "Applied config patch from local file.", .{
         .schemaVersion = 1,
         .ok = true,
-        .actions = actions.items,
+        .sections = sections,
     });
 }
 
@@ -774,9 +944,14 @@ pub fn runWebhooksListen(
     defer allocator.free(path);
 
     var seen: std.StringHashMap(void) = .init(allocator);
-    defer seen.deinit();
+    defer {
+        var keys = seen.keyIterator();
+        while (keys.next()) |key| allocator.free(key.*);
+        seen.deinit();
+    }
 
     var forwarded: u32 = 0;
+    var forwarded_with_body: u32 = 0;
     var polls: u32 = 0;
     const max_polls = if (listen.forward != null) listen.max_polls else 1;
 
@@ -785,33 +960,24 @@ pub fn runWebhooksListen(
         defer allocator.free(resp.body);
         if (resp.status < 200 or resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, resp);
 
-        const Delivery = struct {
-            id: ?[]const u8 = null,
-            eventType: ?[]const u8 = null,
-            status: ?[]const u8 = null,
-        };
-        const parsed = try std.json.parseFromSlice(struct {
-            data: ?[]Delivery = null,
-        }, allocator, resp.body, .{ .ignore_unknown_fields = true });
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, resp.body, .{}) catch continue;
         defer parsed.deinit();
+        const data = objectField(parsed.value, "data") orelse continue;
+        if (data != .array) continue;
 
-        if (parsed.value.data) |items| {
-            for (items) |item| {
-                const id = item.id orelse continue;
-                if (seen.contains(id)) continue;
-                try seen.put(id, {});
+        for (data.array.items) |item| {
+            const id = jsonString(item, "id") orelse continue;
+            if (seen.contains(id)) continue;
+            try seen.put(try allocator.dupe(u8, id), {});
 
-                if (listen.forward) |forward_url| {
-                    var payload: std.Io.Writer.Allocating = .init(allocator);
-                    defer payload.deinit();
-                    try payload.writer.print("{f}", .{std.json.fmt(.{
-                        .deliveryId = id,
-                        .eventType = item.eventType,
-                        .status = item.status,
-                    }, .{})});
-                    const fwd = try api.postJson(allocator, io, forward_url, "", payload.written());
-                    defer allocator.free(fwd.body);
-                    if (fwd.status >= 200 and fwd.status < 300) forwarded += 1;
+            if (listen.forward) |forward_url| {
+                const shaped = try forwardDelivery(allocator, item);
+                defer allocator.free(shaped.payload);
+                const fwd = try api.postJson(allocator, io, forward_url, "", shaped.payload);
+                defer allocator.free(fwd.body);
+                if (fwd.status >= 200 and fwd.status < 300) {
+                    forwarded += 1;
+                    if (shaped.with_body) forwarded_with_body += 1;
                 }
             }
         }
@@ -825,6 +991,7 @@ pub fn runWebhooksListen(
         .polls = polls,
         .trackedDeliveries = seen.count(),
         .forwarded = forwarded,
+        .forwardedWithBody = forwarded_with_body,
         .forward = listen.forward,
     });
 }
@@ -836,10 +1003,6 @@ pub fn runImpersonate(
     opts: globals.GlobalOptions,
     imp: ImpersonateOptions,
 ) !void {
-    const user_id = imp.user_id orelse {
-        try out.fail(allocator, io, opts.format, "missing --user-id");
-    };
-
     const auth = auth_session.requireAuth(allocator, io, environ, opts.api_origin) catch {
         try out.fail(allocator, io, opts.format, "not logged in; run `authdog login`");
     };
@@ -850,6 +1013,31 @@ pub fn runImpersonate(
     const linked = try requireLinked(allocator, io, opts.format, project_path);
     defer linked.deinit(allocator);
 
+    if (imp.revoke) {
+        const grant_id = imp.grant_id orelse try out.fail(allocator, io, opts.format, "missing --grant-id");
+        const grant_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/impersonation-grants/{s}/revoke", .{ linked.tenantId, linked.environmentId, grant_id });
+        defer allocator.free(grant_path);
+        const grant_url = try api.joinUrl(allocator, auth.api_origin, grant_path);
+        defer allocator.free(grant_url);
+        const grant_resp = try api.postJson(allocator, io, grant_url, auth.access_token, "{}");
+        defer allocator.free(grant_resp.body);
+        if (grant_resp.status < 200 or grant_resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, grant_resp);
+        try out.emit(allocator, io, opts.format, "Impersonation grant revoked.", .{
+            .schemaVersion = 1,
+            .ok = true,
+            .grantId = grant_id,
+            .revoked = true,
+        });
+        return;
+    }
+
+    const user_id = imp.user_id orelse {
+        try out.fail(allocator, io, opts.format, "missing --user-id");
+    };
+    if (opts.non_interactive and imp.create_grant and (imp.reason == null or imp.reason.?.len == 0)) {
+        try out.fail(allocator, io, opts.format, "missing --reason");
+    }
+
     const userinfo = try api.getJson(allocator, io, auth.api_origin, "/v1/userinfo", auth.access_token);
     defer allocator.free(userinfo.body);
     if (userinfo.status < 200 or userinfo.status >= 300) try api.reportApiFailure(allocator, io, opts.format, userinfo);
@@ -859,37 +1047,72 @@ pub fn runImpersonate(
     };
     defer allocator.free(actor_id);
 
+    var grant_id: ?[]u8 = null;
+    defer if (grant_id) |id| allocator.free(id);
+
     if (imp.create_grant) {
         const grant_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/impersonation-grants", .{ linked.tenantId, linked.environmentId });
         defer allocator.free(grant_path);
         const grant_url = try api.joinUrl(allocator, auth.api_origin, grant_path);
         defer allocator.free(grant_url);
         const reason = imp.reason orelse "CLI impersonation";
-        const body = try std.fmt.allocPrint(allocator, "{{\"actorUserId\":\"{s}\",\"targetUserId\":\"{s}\",\"durationMinutes\":{d},\"reason\":\"{s}\"}}", .{
-            actor_id,
-            user_id,
-            imp.duration_minutes,
-            reason,
-        });
-        defer allocator.free(body);
-        const grant_resp = try api.postJson(allocator, io, grant_url, auth.access_token, body);
+        var body_buf: std.Io.Writer.Allocating = .init(allocator);
+        defer body_buf.deinit();
+        try body_buf.writer.print("{f}", .{std.json.fmt(.{
+            .actorUserId = actor_id,
+            .targetUserId = user_id,
+            .durationMinutes = imp.duration_minutes,
+            .reason = reason,
+        }, .{})});
+        const grant_resp = try api.postJson(allocator, io, grant_url, auth.access_token, body_buf.written());
         defer allocator.free(grant_resp.body);
         if (grant_resp.status < 200 or grant_resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, grant_resp);
+        grant_id = try extractGrantId(allocator, grant_resp.body);
     }
 
     const identity_url = try std.fmt.allocPrint(allocator, "{s}/api/v1/identity/{s}/impersonate", .{ linked.identityOrigin, linked.environmentId });
     defer allocator.free(identity_url);
-    const imp_body = try std.fmt.allocPrint(allocator, "{{\"userId\":\"{s}\",\"tenantId\":\"{s}\"}}", .{ user_id, linked.tenantId });
-    defer allocator.free(imp_body);
-    const imp_resp = try api.postJson(allocator, io, identity_url, auth.access_token, imp_body);
+    var imp_buf: std.Io.Writer.Allocating = .init(allocator);
+    defer imp_buf.deinit();
+    try imp_buf.writer.print("{f}", .{std.json.fmt(.{ .userId = user_id, .tenantId = linked.tenantId }, .{})});
+    const imp_resp = try api.postJson(allocator, io, identity_url, auth.access_token, imp_buf.written());
     defer allocator.free(imp_resp.body);
     if (imp_resp.status < 200 or imp_resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, imp_resp);
 
-    try out.emit(allocator, io, opts.format, "Impersonation token minted.", .{
-        .schemaVersion = 1,
-        .ok = true,
-        .response = imp_resp.body,
-    });
+    const shaped = try shapeImpersonation(allocator, imp_resp.body);
+    defer if (shaped.sign_in_url) |url| allocator.free(url);
+    if (shaped.sign_in_url) |url| {
+        if (grant_id) |id| {
+            try out.emit(allocator, io, opts.format, "Impersonation sign-in URL ready.", .{
+                .schemaVersion = 1,
+                .ok = true,
+                .grantId = id,
+                .signInUrl = url,
+            });
+        } else {
+            try out.emit(allocator, io, opts.format, "Impersonation sign-in URL ready.", .{
+                .schemaVersion = 1,
+                .ok = true,
+                .signInUrl = url,
+            });
+        }
+    } else {
+        const instructions = shaped.instructions.?;
+        if (grant_id) |id| {
+            try out.emit(allocator, io, opts.format, instructions, .{
+                .schemaVersion = 1,
+                .ok = true,
+                .grantId = id,
+                .instructions = instructions,
+            });
+        } else {
+            try out.emit(allocator, io, opts.format, instructions, .{
+                .schemaVersion = 1,
+                .ok = true,
+                .instructions = instructions,
+            });
+        }
+    }
 }
 
 fn extractUserId(allocator: std.mem.Allocator, body: []const u8) !?[]const u8 {
@@ -923,17 +1146,40 @@ pub fn runDeployStatus(
     defer allocator.free(posture_path);
     const vanity_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/vanity-domains", .{ linked.tenantId, linked.environmentId });
     defer allocator.free(vanity_path);
+    const redirect_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/applications/{s}/environments/{s}/redirect-uris", .{ linked.tenantId, linked.applicationId, linked.environmentId });
+    defer allocator.free(redirect_path);
+    const webhooks_path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/webhooks", .{ linked.tenantId, linked.environmentId });
+    defer allocator.free(webhooks_path);
 
-    const posture = try api.getJson(allocator, io, auth.api_origin, posture_path, auth.access_token);
-    defer allocator.free(posture.body);
-    const vanity = try api.getJson(allocator, io, auth.api_origin, vanity_path, auth.access_token);
-    defer allocator.free(vanity.body);
+    const Readiness = struct {
+        name: []const u8,
+        path: []const u8,
+        ok_detail: []const u8,
+    };
+    const rows = [_]Readiness{
+        .{ .name = "security-posture", .path = posture_path, .ok_detail = "score available" },
+        .{ .name = "vanity-domains", .path = vanity_path, .ok_detail = "listed" },
+        .{ .name = "redirects", .path = redirect_path, .ok_detail = "listed" },
+        .{ .name = "webhooks", .path = webhooks_path, .ok_detail = "listed" },
+    };
+    const Check = struct { name: []const u8, ok: bool, detail: []const u8 };
+    var checks: [4]Check = undefined;
+    for (rows, 0..) |row, index| {
+        const resp = try api.getJson(allocator, io, auth.api_origin, row.path, auth.access_token);
+        defer allocator.free(resp.body);
+        if (resp.status == 401) try api.reportApiFailure(allocator, io, opts.format, resp);
+        const ok = resp.status >= 200 and resp.status < 300;
+        checks[index] = .{
+            .name = row.name,
+            .ok = ok,
+            .detail = if (ok) row.ok_detail else "request failed",
+        };
+    }
 
     try out.emit(allocator, io, opts.format, "Deploy readiness snapshot.", .{
         .schemaVersion = 1,
         .ok = true,
-        .securityPosture = posture.body,
-        .vanityDomains = vanity.body,
+        .checks = checks,
     });
 }
 
@@ -1042,20 +1288,31 @@ pub fn runMcp(
             });
         },
         .install => {
-            try upsertCursorMcpConfig(allocator, io, config_path, mcp_url);
+            const written = upsertCursorMcpConfig(allocator, io, config_path, mcp_url) catch |err| switch (err) {
+                error.InvalidJson => try out.fail(allocator, io, opts.format, "mcp config is not valid JSON"),
+                else => return err,
+            };
+            defer freeNameList(allocator, written.preserved);
             try out.emit(allocator, io, opts.format, "Registered Authdog MCP in Cursor config.", .{
                 .schemaVersion = 1,
                 .ok = true,
                 .configPath = config_path,
                 .serverUrl = mcp_url,
+                .preservedServers = written.preserved,
             });
         },
         .uninstall => {
-            try removeCursorMcpConfig(allocator, io, config_path);
+            const written = removeCursorMcpConfig(allocator, io, config_path) catch |err| switch (err) {
+                error.InvalidJson => try out.fail(allocator, io, opts.format, "mcp config is not valid JSON"),
+                else => return err,
+            };
+            defer freeNameList(allocator, written.preserved);
             try out.emit(allocator, io, opts.format, "Removed Authdog MCP from Cursor config.", .{
                 .schemaVersion = 1,
                 .ok = true,
                 .configPath = config_path,
+                .removed = written.removed,
+                .preservedServers = written.preserved,
             });
         },
     }
@@ -1070,30 +1327,436 @@ fn mcpConfigExists(io: std.Io, path: []const u8) !bool {
     return true;
 }
 
-fn upsertCursorMcpConfig(allocator: std.mem.Allocator, io: std.Io, path: []const u8, url: []const u8) !void {
-    _ = allocator;
-    const snippet =
-        \\{
-        \\  "mcpServers": {
-        \\    "authdog": {
-        \\      "url": "URL_PLACEHOLDER"
-        \\    }
-        \\  }
-        \\}
-    ;
-    const replaced = try std.mem.replaceOwned(u8, std.heap.page_allocator, snippet, "URL_PLACEHOLDER", url);
-    defer std.heap.page_allocator.free(replaced);
+const McpWrite = struct {
+    preserved: [][]u8,
+    removed: bool = false,
+};
 
-    if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(io, dir);
-    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = replaced }) catch |err| switch (err) {
-        error.FileNotFound => try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = replaced }),
-        else => return err,
+fn freeNameList(allocator: std.mem.Allocator, names: [][]u8) void {
+    for (names) |name| allocator.free(name);
+    allocator.free(names);
+}
+
+fn upsertCursorMcpConfig(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    url: []const u8,
+) !McpWrite {
+    const existing = try readOptionalFile(allocator, io, path);
+    defer if (existing) |bytes| allocator.free(bytes);
+    const source = if (existing) |bytes| if (bytes.len == 0) "{}" else bytes else "{}";
+    const merged = try mergeAuthdogServer(allocator, source, url);
+    defer allocator.free(merged.doc);
+    writeConfigFile(io, path, merged.doc) catch |err| {
+        freeNameList(allocator, merged.preserved);
+        return err;
+    };
+    return .{ .preserved = merged.preserved };
+}
+
+fn removeCursorMcpConfig(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) !McpWrite {
+    const existing = try readOptionalFile(allocator, io, path);
+    const bytes = existing orelse return .{ .preserved = try allocator.alloc([]u8, 0) };
+    defer allocator.free(bytes);
+    if (bytes.len == 0) return .{ .preserved = try allocator.alloc([]u8, 0) };
+    const stripped = try stripAuthdogServer(allocator, bytes);
+    defer allocator.free(stripped.doc);
+    if (stripped.removed) {
+        writeConfigFile(io, path, stripped.doc) catch |err| {
+            freeNameList(allocator, stripped.preserved);
+            return err;
+        };
+    }
+    return .{ .preserved = stripped.preserved, .removed = stripped.removed };
+}
+
+fn readOptionalFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !?[]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => err,
     };
 }
 
-fn removeCursorMcpConfig(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !void {
-    _ = allocator;
-    _ = io;
-    _ = path;
-    // v1: user-global MCP configs vary; avoid deleting unrelated servers.
+fn writeConfigFile(io: std.Io, path: []const u8, data: []const u8) !void {
+    if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(io, dir);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
+}
+
+const ServerEdit = struct {
+    doc: []u8,
+    preserved: [][]u8,
+    removed: bool = false,
+};
+
+fn parseJsonValue(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return error.InvalidJson;
+}
+
+fn objectField(value: std.json.Value, name: []const u8) ?std.json.Value {
+    return switch (value) {
+        .object => |map| map.get(name),
+        else => null,
+    };
+}
+
+fn jsonString(value: std.json.Value, name: []const u8) ?[]const u8 {
+    const field = objectField(value, name) orelse return null;
+    return switch (field) {
+        .string => |text| text,
+        else => null,
+    };
+}
+
+fn isSecretKey(name: []const u8) bool {
+    return std.mem.eql(u8, name, "signingSecret") or
+        std.mem.eql(u8, name, "secret") or
+        std.mem.eql(u8, name, "clientSecret") or
+        std.mem.eql(u8, name, "token");
+}
+
+fn redactSecrets(allocator: std.mem.Allocator, value: *std.json.Value) !void {
+    switch (value.*) {
+        .object => |*map| {
+            var remove_keys: std.ArrayList([]const u8) = .empty;
+            defer remove_keys.deinit(allocator);
+            var it = map.iterator();
+            while (it.next()) |entry| {
+                if (isSecretKey(entry.key_ptr.*)) {
+                    try remove_keys.append(allocator, entry.key_ptr.*);
+                } else {
+                    try redactSecrets(allocator, entry.value_ptr);
+                }
+            }
+            for (remove_keys.items) |key| _ = map.orderedRemove(key);
+        },
+        .array => |*items| {
+            for (items.items) |*item| try redactSecrets(allocator, item);
+        },
+        else => {},
+    }
+}
+
+fn containsSecretKey(value: std.json.Value) bool {
+    switch (value) {
+        .object => |map| {
+            var it = map.iterator();
+            while (it.next()) |entry| {
+                if (isSecretKey(entry.key_ptr.*)) return true;
+                if (containsSecretKey(entry.value_ptr.*)) return true;
+            }
+            return false;
+        },
+        .array => |items| {
+            for (items.items) |item| if (containsSecretKey(item)) return true;
+            return false;
+        },
+        else => return false,
+    }
+}
+
+fn jsonEqual(a: std.json.Value, b: std.json.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .null => true,
+        .bool => |value| value == b.bool,
+        .integer => |value| value == b.integer,
+        .float => |value| value == b.float,
+        .number_string => |value| std.mem.eql(u8, value, b.number_string),
+        .string => |value| std.mem.eql(u8, value, b.string),
+        .array => |items| blk: {
+            if (items.items.len != b.array.items.len) break :blk false;
+            for (items.items, b.array.items) |left, right| {
+                if (!jsonEqual(left, right)) break :blk false;
+            }
+            break :blk true;
+        },
+        .object => |map| blk: {
+            if (map.count() != b.object.count()) break :blk false;
+            var it = map.iterator();
+            while (it.next()) |entry| {
+                const other = b.object.get(entry.key_ptr.*) orelse break :blk false;
+                if (!jsonEqual(entry.value_ptr.*, other)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
+}
+
+fn sectionWord(local: std.json.Value, live: std.json.Value, name: []const u8) []const u8 {
+    const left = objectField(local, name);
+    const right = objectField(live, name);
+    if (left == null and right == null) return "match";
+    if (left == null or right == null) return "differ";
+    return if (jsonEqual(left.?, right.?)) "match" else "differ";
+}
+
+fn diffConfigDocuments(allocator: std.mem.Allocator, local_bytes: []const u8, live_bytes: []const u8) !SectionDiff {
+    const local = try parseJsonValue(allocator, local_bytes);
+    defer local.deinit();
+    const live = try parseJsonValue(allocator, live_bytes);
+    defer live.deinit();
+    const sessionConfig = sectionWord(local.value, live.value, "sessionConfig");
+    const redirectUris = sectionWord(local.value, live.value, "redirectUris");
+    const webhooks = sectionWord(local.value, live.value, "webhooks");
+    const oidcClients = sectionWord(local.value, live.value, "oidcClients");
+    const matches = std.mem.eql(u8, sessionConfig, "match") and
+        std.mem.eql(u8, redirectUris, "match") and
+        std.mem.eql(u8, webhooks, "match") and
+        std.mem.eql(u8, oidcClients, "match");
+    return .{
+        .matches = matches,
+        .sessionConfig = sessionConfig,
+        .redirectUris = redirectUris,
+        .webhooks = webhooks,
+        .oidcClients = oidcClients,
+    };
+}
+
+const DeliveryForward = struct {
+    payload: []u8,
+    with_body: bool,
+};
+
+fn forwardDelivery(allocator: std.mem.Allocator, item: std.json.Value) !DeliveryForward {
+    if (jsonString(item, "body")) |body| {
+        return .{ .payload = try allocator.dupe(u8, body), .with_body = true };
+    }
+    if (jsonString(item, "payload")) |body| {
+        return .{ .payload = try allocator.dupe(u8, body), .with_body = true };
+    }
+    const payload = try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(.{
+        .deliveryId = jsonString(item, "id") orelse "",
+        .eventType = jsonString(item, "eventType") orelse "",
+        .payloadAvailable = false,
+    }, .{})});
+    return .{ .payload = payload, .with_body = false };
+}
+
+const ImpersonationShape = struct {
+    sign_in_url: ?[]u8 = null,
+    instructions: ?[]const u8 = null,
+};
+
+fn shapeImpersonation(allocator: std.mem.Allocator, body: []const u8) !ImpersonationShape {
+    const parsed = parseJsonValue(allocator, body) catch {
+        return .{ .instructions = "Complete sign-in in the app callback. The impersonation token is not printed." };
+    };
+    defer parsed.deinit();
+    const token = jsonString(parsed.value, "token");
+    const redirect = jsonString(parsed.value, "redirectTo");
+    if (redirect) |target| if (token) |value| {
+        const sep: []const u8 = if (std.mem.indexOfScalar(u8, target, '?') != null) "&" else "?";
+        return .{
+            .sign_in_url = try std.fmt.allocPrint(allocator, "{s}{s}token={s}", .{ target, sep, value }),
+        };
+    };
+    return .{ .instructions = "Complete sign-in in the app callback. The impersonation token is not printed." };
+}
+
+fn extractGrantId(allocator: std.mem.Allocator, body: []const u8) !?[]u8 {
+    const parsed = parseJsonValue(allocator, body) catch return null;
+    defer parsed.deinit();
+    if (objectField(parsed.value, "grant")) |grant| {
+        if (jsonString(grant, "id")) |id| if (id.len != 0) return try allocator.dupe(u8, id);
+    }
+    if (jsonString(parsed.value, "grantId")) |id| if (id.len != 0) return try allocator.dupe(u8, id);
+    if (jsonString(parsed.value, "id")) |id| if (id.len != 0) return try allocator.dupe(u8, id);
+    return null;
+}
+
+fn preservedNames(allocator: std.mem.Allocator, servers: std.json.ObjectMap) ![][]u8 {
+    var list: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (list.items) |item| allocator.free(item);
+        list.deinit(allocator);
+    }
+    var it = servers.iterator();
+    while (it.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "authdog")) continue;
+        try list.append(allocator, try allocator.dupe(u8, entry.key_ptr.*));
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+fn mergeAuthdogServer(allocator: std.mem.Allocator, existing: []const u8, url: []const u8) !ServerEdit {
+    const parsed = try parseJsonValue(allocator, existing);
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidJson;
+    var root = parsed.value;
+    const gpa = parsed.arena.allocator();
+    var servers = std.json.ObjectMap.empty;
+    if (objectField(root, "mcpServers")) |current| {
+        if (current != .object) return error.InvalidJson;
+        servers = current.object;
+    }
+    const url_copy = try gpa.dupe(u8, url);
+    var authdog_server = std.json.ObjectMap.empty;
+    try authdog_server.put(gpa, "url", .{ .string = url_copy });
+    try servers.put(gpa, "authdog", .{ .object = authdog_server });
+    try root.object.put(gpa, "mcpServers", .{ .object = servers });
+
+    const preserved = try preservedNames(allocator, servers);
+    errdefer freeNameList(allocator, preserved);
+    var doc: std.Io.Writer.Allocating = .init(allocator);
+    errdefer doc.deinit();
+    try doc.writer.print("{f}\n", .{std.json.fmt(root, .{ .whitespace = .indent_2 })});
+    return .{ .doc = try doc.toOwnedSlice(), .preserved = preserved };
+}
+
+fn stripAuthdogServer(allocator: std.mem.Allocator, existing: []const u8) !ServerEdit {
+    const parsed = try parseJsonValue(allocator, existing);
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidJson;
+    var root = parsed.value;
+    const gpa = parsed.arena.allocator();
+    var removed = false;
+    var servers = std.json.ObjectMap.empty;
+    if (objectField(root, "mcpServers")) |current| {
+        if (current != .object) return error.InvalidJson;
+        servers = current.object;
+        removed = servers.orderedRemove("authdog");
+        try root.object.put(gpa, "mcpServers", .{ .object = servers });
+    }
+    const preserved = try preservedNames(allocator, servers);
+    errdefer freeNameList(allocator, preserved);
+    var doc: std.Io.Writer.Allocating = .init(allocator);
+    errdefer doc.deinit();
+    try doc.writer.print("{f}\n", .{std.json.fmt(root, .{ .whitespace = .indent_2 })});
+    return .{ .doc = try doc.toOwnedSlice(), .preserved = preserved, .removed = removed };
+}
+
+test "config diff names the changed section and ignores key order" {
+    const local =
+        \\{"schemaVersion":1,"sessionConfig":{"a":1},"redirectUris":{"b":2},"webhooks":{},"oidcClients":{}}
+    ;
+    const reordered =
+        \\{"oidcClients":{},"webhooks":{},"redirectUris":{"b":2},"sessionConfig":{"a":1}}
+    ;
+    const same = try diffConfigDocuments(std.testing.allocator, local, reordered);
+    try std.testing.expect(same.matches);
+    try std.testing.expectEqualStrings("match", same.sessionConfig);
+
+    const changed =
+        \\{"sessionConfig":{"a":1},"redirectUris":{"b":9},"webhooks":{},"oidcClients":{}}
+    ;
+    const diff = try diffConfigDocuments(std.testing.allocator, local, changed);
+    try std.testing.expect(!diff.matches);
+    try std.testing.expectEqualStrings("match", diff.sessionConfig);
+    try std.testing.expectEqualStrings("differ", diff.redirectUris);
+    try std.testing.expectEqualStrings("match", diff.webhooks);
+    try std.testing.expectEqualStrings("match", diff.oidcClients);
+}
+
+test "config document redacts secrets and keeps oidc clients" {
+    const doc = try formatConfigDocument(std.testing.allocator, .{
+        .session = "{}",
+        .redirect = "{}",
+        .webhooks = "{\"id\":\"1\",\"signingSecret\":\"whsec_secret\"}",
+        .oidc = "{\"clients\":[{\"clientId\":\"abc\",\"clientSecret\":\"sekret\"}]}",
+    });
+    defer std.testing.allocator.free(doc);
+    try std.testing.expect(std.mem.indexOf(u8, doc, "whsec_secret") == null);
+    try std.testing.expect(std.mem.indexOf(u8, doc, "sekret") == null);
+    try std.testing.expect(std.mem.indexOf(u8, doc, "signingSecret") == null);
+    try std.testing.expect(std.mem.indexOf(u8, doc, "oidcClients") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doc, "abc") != null);
+}
+
+test "listen forward is honest about a missing body" {
+    const missing = try parseJsonValue(std.testing.allocator, "{\"id\":\"d1\",\"eventType\":\"LOGIN\"}");
+    defer missing.deinit();
+    const empty = try forwardDelivery(std.testing.allocator, missing.value);
+    defer std.testing.allocator.free(empty.payload);
+    try std.testing.expect(!empty.with_body);
+    try std.testing.expect(std.mem.indexOf(u8, empty.payload, "payloadAvailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, empty.payload, "d1") != null);
+
+    const present = try parseJsonValue(std.testing.allocator, "{\"id\":\"d2\",\"body\":\"{\\\"ok\\\":true}\"}");
+    defer present.deinit();
+    const forwarded = try forwardDelivery(std.testing.allocator, present.value);
+    defer std.testing.allocator.free(forwarded.payload);
+    try std.testing.expect(forwarded.with_body);
+    try std.testing.expectEqualStrings("{\"ok\":true}", forwarded.payload);
+}
+
+test "impersonation url omits a token field" {
+    const shaped = try shapeImpersonation(std.testing.allocator, "{\"token\":\"sekret\",\"redirectTo\":\"https://app.example/cb\"}");
+    defer if (shaped.sign_in_url) |url| std.testing.allocator.free(url);
+    try std.testing.expect(std.mem.startsWith(u8, shaped.sign_in_url.?, "https://app.example/cb?token="));
+    var rendered: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer rendered.deinit();
+    try rendered.writer.print("{f}", .{std.json.fmt(.{ .signInUrl = shaped.sign_in_url.? }, .{})});
+    try std.testing.expect(std.mem.indexOf(u8, rendered.written(), "\"token\":") == null);
+
+    const hidden = try shapeImpersonation(std.testing.allocator, "{\"token\":\"sekret\"}");
+    try std.testing.expect(hidden.sign_in_url == null);
+    try std.testing.expect(std.mem.indexOf(u8, hidden.instructions.?, "sekret") == null);
+}
+
+test "mcp merge keeps other servers and uninstall removes only authdog" {
+    const merged = try mergeAuthdogServer(
+        std.testing.allocator,
+        "{\"mcpServers\":{\"other\":{\"url\":\"http://example\"}}}",
+        "https://api.authdog.com/mcp",
+    );
+    defer std.testing.allocator.free(merged.doc);
+    defer freeNameList(std.testing.allocator, merged.preserved);
+    try std.testing.expect(std.mem.indexOf(u8, merged.doc, "\"other\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, merged.doc, "\"authdog\"") != null);
+    try std.testing.expectEqual(@as(usize, 1), merged.preserved.len);
+    try std.testing.expectEqualStrings("other", merged.preserved[0]);
+
+    try std.testing.expectError(error.InvalidJson, mergeAuthdogServer(std.testing.allocator, "{", "https://api.authdog.com/mcp"));
+
+    const stripped = try stripAuthdogServer(std.testing.allocator, merged.doc);
+    defer std.testing.allocator.free(stripped.doc);
+    defer freeNameList(std.testing.allocator, stripped.preserved);
+    try std.testing.expect(stripped.removed);
+    try std.testing.expect(std.mem.indexOf(u8, stripped.doc, "\"authdog\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped.doc, "\"other\"") != null);
+}
+
+test "invalid mcp json is not rewritten" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}/mcp.json", .{&tmp.sub_path});
+    defer std.testing.allocator.free(path);
+    try writeConfigFile(io, path, "{");
+    try std.testing.expectError(error.InvalidJson, upsertCursorMcpConfig(std.testing.allocator, io, path, "https://api.authdog.com/mcp"));
+    const after = (try readOptionalFile(std.testing.allocator, io, path)).?;
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings("{", after);
+}
+
+test "init snippet skips an existing file and leaves layout bytes" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const layout = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}/app/layout.tsx", .{&tmp.sub_path});
+    defer std.testing.allocator.free(layout);
+    const snippet = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}/app/authdog-provider.tsx", .{&tmp.sub_path});
+    defer std.testing.allocator.free(snippet);
+    try applyNewFile(io, layout, "layout-bytes");
+    const created = if (fileExists(io, snippet)) "skip-exists" else blk: {
+        try applyNewFile(io, snippet, "snippet-bytes");
+        break :blk "create";
+    };
+    const skipped = if (fileExists(io, snippet)) "skip-exists" else "create";
+    const layout_after = (try readOptionalFile(std.testing.allocator, io, layout)).?;
+    defer std.testing.allocator.free(layout_after);
+    const snippet_after = (try readOptionalFile(std.testing.allocator, io, snippet)).?;
+    defer std.testing.allocator.free(snippet_after);
+    try std.testing.expectEqualStrings("create", created);
+    try std.testing.expectEqualStrings("skip-exists", skipped);
+    try std.testing.expectEqualStrings("layout-bytes", layout_after);
+    try std.testing.expectEqualStrings("snippet-bytes", snippet_after);
+    try std.testing.expectEqualStrings("app/authdog-provider.tsx", snippetDest(.nextjs).?);
+    try std.testing.expectEqualStrings("bun", try resolvePackageManager(io, "bun", .nextjs));
+    try std.testing.expectError(error.UnknownPackageManager, resolvePackageManager(io, "cargo", .nextjs));
 }

@@ -23,7 +23,9 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addOptions("build_options", options);
     const callback_page = callbackPageModule(b);
+    const snippets = snippetsModule(b);
     exe.root_module.addImport("callback_page", callback_page);
+    exe.root_module.addImport("snippets", snippets);
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -39,6 +41,7 @@ pub fn build(b: *std.Build) void {
     });
     unit_mod.addOptions("build_options", options);
     unit_mod.addImport("callback_page", callback_page);
+    unit_mod.addImport("snippets", snippets);
     const unit_tests = b.addTest(.{
         .root_module = unit_mod,
     });
@@ -64,6 +67,19 @@ const ReleaseInfo = struct {
     version: []const u8,
     stable: bool,
 };
+
+fn snippetsModule(b: *std.Build) *std.Build.Module {
+    const files = b.addWriteFiles();
+    _ = files.addCopyFile(b.path("assets/snippets/nextjs-provider.tsx"), "nextjs-provider.tsx");
+    _ = files.addCopyFile(b.path("assets/snippets/express-client.ts"), "express-client.ts");
+    return b.createModule(.{
+        .root_source_file = files.add("snippets.zig",
+            \\pub const nextjs = @embedFile("nextjs-provider.tsx");
+            \\pub const express = @embedFile("express-client.ts");
+            \\
+        ),
+    });
+}
 
 fn callbackPageModule(b: *std.Build) *std.Build.Module {
     const files = b.addWriteFiles();

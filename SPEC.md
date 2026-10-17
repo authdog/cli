@@ -399,12 +399,10 @@ Snippets ship embedded in CLI release artifact (generated in CI from `sdk-snippe
 
 ## 14. Open questions
 
-1. Token refresh: does Identity expose refresh for CLI grants today? If not, add refresh to redeem response handling before long-running commands.
-2. Webhook signature: exact header names and HMAC algorithm for `webhooks verify`.
+1. **Resolved (2026-10-17):** Identity CLI OAuth exposes `start`, `poll`, and `redeem` only. Redeem returns `access_token` and `refresh_token` and does not offer a refresh route. Expired sessions must ask the operator to `login` again (`specs/001-command-fidelity` Wave 2). Do not invent a refresh call.
+2. **Resolved:** Webhook signatures use `X-Authdog-Signature: t=<unix>, v1=<hex>` with HMAC-SHA256 over `{t}.{rawBody}`. `webhooks verify` already implements that scheme.
 3. `config patch` authorization: which Management scopes are required per sub-resource?
-4. Should `init` create a dev environment automatically (`POST …/environments`) or only link existing?
-
-Resolve in API/Identity specs before P1/P2 implementation.
+4. Should `init` create a dev environment automatically (`POST …/environments`) or only link existing? Wave 5 links existing environments only.
 
 ---
 
@@ -419,3 +417,9 @@ RP helper) are tracked in:
 
 Interim Bun scripts live in `platform-next/services/openid-server/scripts/agent-signin-*.ts`
 until 025 Wave 1 ships in the Zig binary.
+
+The next CLI program, after 025 waves 1–5, is
+[`specs/001-command-fidelity/`](specs/001-command-fidelity/spec.md): ten
+waves that make the shipped commands safe and complete (MCP merge,
+session expiry, config diff and patch, init files, framework install,
+webhook forward honesty, impersonation, deploy checklist, contract tests).
