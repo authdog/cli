@@ -153,15 +153,40 @@ pub fn apiErrorMessage(allocator: std.mem.Allocator, resp: Response) ![]const u8
     return std.fmt.allocPrint(allocator, "HTTP {d}", .{resp.status});
 }
 
+pub fn sessionExpiredCode(status: u16) ?[]const u8 {
+    if (status == 401) return "session_expired";
+    return null;
+}
+
 pub fn reportApiFailure(
     allocator: std.mem.Allocator,
     io: std.Io,
     format: globals.OutputFormat,
     resp: Response,
-) error{Reported}!noreturn {
-    const message = apiErrorMessage(allocator, resp) catch "API request failed";
+) error{ Reported, SessionExpired }!noreturn {
+    if (sessionExpiredCode(resp.status)) |code| {
+        switch (format) {
+            .text => out.errPrint(io, allocator, "session expired; run authdog login", .{}) catch {},
+            .json => out.emit(allocator, io, .json, "", .{
+                .schemaVersion = 1,
+                .ok = false,
+                .@"error" = code,
+            }) catch {},
+        }
+        return error.SessionExpired;
+    }
+    const message = apiErrorMessage(allocator, resp) catch {
+        try out.fail(allocator, io, format, "API request failed");
+    };
     defer allocator.free(message);
     try out.fail(allocator, io, format, message);
+}
+
+test "401 selects session_expired and hides token text" {
+    const code = sessionExpiredCode(401).?;
+    try std.testing.expectEqualStrings("session_expired", code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "access_token") == null);
+    try std.testing.expect(sessionExpiredCode(403) == null);
 }
 
 test {

@@ -49,7 +49,7 @@ authdog config pull | diff | patch [--dry-run]
 authdog doctor [--mcp] [--agent-sign-in]
 authdog webhooks verify --secret … --signature … --body '…'
 authdog webhooks listen [--forward URL] [--interval-ms 2000] [--max-polls 60]
-authdog impersonate --user-id …
+authdog impersonate --user-id … | impersonate revoke --grant-id …
 authdog deploy status
 authdog mcp install | list | uninstall
 authdog agent doctor | prove --accept-disclosure | rp-init --name … --redirect-uri … | wait --poll
