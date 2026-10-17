@@ -92,6 +92,19 @@ pub fn postJson(
     return fetch(allocator, io, .POST, url, bearer, body);
 }
 
+pub fn putJson(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    api_origin: []const u8,
+    path: []const u8,
+    bearer: []const u8,
+    body: []const u8,
+) !Response {
+    const url = try joinUrl(allocator, api_origin, path);
+    defer allocator.free(url);
+    return fetch(allocator, io, .PUT, url, bearer, body);
+}
+
 /// POST `application/x-www-form-urlencoded` (OAuth token/device endpoints).
 pub fn postForm(
     allocator: std.mem.Allocator,

@@ -219,7 +219,7 @@ authdog webhooks listen --forward http://127.0.0.1:3000/webhooks/authdog [--envi
 **Behavior (phased):**
 
 - **Phase A (no new infra):** Poll `GET …/webhooks/deliveries?limit=…` on an interval; for each new delivery id, fetch payload from delivery record (or Management-backed fields returned by API), POST to `--forward`, print summary. Optionally call `POST …/deliveries/{deliveryId}/redeliver` when the platform supports targeting a alternate URL (if not, replay body client-side).
-- **Phase B (optional):** CLI temporarily updates one webhook endpoint URL to a user-supplied tunnel URL, with restore on exit (requires `--channel-id` and explicit consent).
+- **Phase B:** `listen --tunnel URL --channel-id ID --restore-url URL --yes` PUTs the tunnel onto that endpoint, polls, then PUTs `--restore-url` back. The list API redacts `webhookUrl`, so the operator must supply the URL to restore. `--yes` is the consent. Name, `enabled`, and `eventTypes` are copied from the list response. Signing secrets are not sent or printed. Ctrl+C stops the poll and still restores.
 
 **Requirements:** Linked project; bearer auth; respects signing secret from endpoint creation/rotation.
 

@@ -180,7 +180,7 @@ const help_text =
     \\  init                  Detect framework, link, and write SDK env vars
     \\  config pull           Pull environment config to .authdog/config.json
     \\  config diff           Compare local config sections to the live environment
-    \\  webhooks listen       Fetch recent webhook deliveries
+    \\  webhooks listen       Poll deliveries (--forward, or --tunnel --channel-id --restore-url --yes)
     \\  webhooks verify       Verify an X-Authdog-Signature offline
     \\  impersonate           Mint a sign-in URL (revoke --grant-id)
     \\  deploy status         Security posture and vanity domain snapshot
@@ -245,6 +245,7 @@ pub fn parse(allocator: std.mem.Allocator, environ: *std.process.Environ.Map, ar
         error.InvalidMcpClient => return .{ .bad = "invalid mcp client; expected cursor, claude, vscode, or codex" },
         error.McpFlagConflict => return .{ .bad = "--client and --all cannot be combined" },
         error.UnrecognizedMcpFlag => return .{ .bad = "unrecognized mcp flag" },
+        error.UnrecognizedWebhookFlag => return .{ .bad = "unrecognized webhooks flag" },
     };
     return .{ .run = .{ .globals = opts, .command = command } };
 }
@@ -308,6 +309,7 @@ const ParseCommandError = error{
     InvalidMcpClient,
     McpFlagConflict,
     UnrecognizedMcpFlag,
+    UnrecognizedWebhookFlag,
 };
 
 fn parseCommand(allocator: std.mem.Allocator, args: []const []const u8, index: *usize) ParseCommandError!Command {
@@ -460,6 +462,28 @@ fn parseWebhooks(allocator: std.mem.Allocator, args: []const []const u8, index: 
                 index.* += 1;
                 continue;
             }
+            if (std.mem.eql(u8, flag, "--tunnel")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                listen.tunnel = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--channel-id")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                listen.channel_id = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--restore-url")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                listen.restore_url = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.startsWith(u8, flag, "--")) return error.UnrecognizedWebhookFlag;
             break;
         }
         return .{ .webhooks_listen = listen };
@@ -835,6 +859,19 @@ test "parses init package manager" {
     try std.testing.expect(parsed.run.command.init.dry_run);
 }
 
+test "parses webhook tunnel flags" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const parsed = try parse(std.testing.allocator, &env, &.{
+        "--yes",        "webhooks", "listen",        "--tunnel",                 "https://tunnel.example/hook",
+        "--channel-id", "chan_1",   "--restore-url", "https://app.example/hook",
+    });
+    try std.testing.expect(parsed.run.globals.yes);
+    try std.testing.expectEqualStrings("https://tunnel.example/hook", parsed.run.command.webhooks_listen.tunnel.?);
+    try std.testing.expectEqualStrings("chan_1", parsed.run.command.webhooks_listen.channel_id.?);
+    try std.testing.expectEqualStrings("https://app.example/hook", parsed.run.command.webhooks_listen.restore_url.?);
+}
+
 test "parses mcp client flags" {
     var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
@@ -878,4 +915,5 @@ test {
     _ = @import("detect.zig");
     _ = @import("api/client.zig");
     _ = @import("mcp_config.zig");
+    _ = @import("webhook_rewrite.zig");
 }

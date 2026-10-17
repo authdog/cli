@@ -13,6 +13,8 @@ const session = @import("session.zig");
 const agent = @import("agent.zig");
 const mcp_config = @import("mcp_config.zig");
 const fs_util = @import("fs_util.zig");
+const webhook_rewrite = @import("webhook_rewrite.zig");
+const builtin = @import("builtin");
 
 pub const LinkOptions = struct {
     tenant_id: ?[]const u8 = null,
@@ -48,6 +50,9 @@ pub const WebhooksListenOptions = struct {
     forward: ?[]const u8 = null,
     interval_ms: u32 = 2000,
     max_polls: u32 = 60,
+    tunnel: ?[]const u8 = null,
+    channel_id: ?[]const u8 = null,
+    restore_url: ?[]const u8 = null,
 };
 
 pub const ConfigPatchOptions = struct {
@@ -940,6 +945,15 @@ pub fn runWebhooksListen(
     opts: globals.GlobalOptions,
     listen: WebhooksListenOptions,
 ) !void {
+    if (listen.tunnel != null) {
+        if (listen.channel_id == null) try out.fail(allocator, io, opts.format, "pass --channel-id with --tunnel");
+        if (listen.restore_url == null) try out.fail(allocator, io, opts.format, "pass --restore-url; the API does not return the current webhook URL");
+        if (!opts.yes) try out.fail(allocator, io, opts.format, "pass --yes to rewrite the webhook URL until this command exits");
+        if (!webhook_rewrite.isChannelId(listen.channel_id.?)) try out.fail(allocator, io, opts.format, "invalid --channel-id");
+        if (!webhook_rewrite.isHttpUrl(listen.tunnel.?) or !webhook_rewrite.isHttpUrl(listen.restore_url.?)) {
+            try out.fail(allocator, io, opts.format, "webhook URL must be http or https");
+        }
+    }
     const auth = auth_session.requireAuth(allocator, io, environ, opts.api_origin) catch {
         try out.fail(allocator, io, opts.format, "not logged in; run `authdog login`");
     };
@@ -953,6 +967,18 @@ pub fn runWebhooksListen(
     const path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/webhooks/deliveries?limit=20", .{ linked.tenantId, linked.environmentId });
     defer allocator.free(path);
 
+    var tunnel_state = TunnelRewrite{
+        .allocator = allocator,
+        .io = io,
+        .origin = auth.api_origin,
+        .bearer = auth.access_token,
+    };
+    defer tunnel_state.restoreIfNeeded();
+    if (listen.tunnel != null) {
+        try tunnel_state.rewrite(opts, linked.tenantId, linked.environmentId, listen);
+        armListenStop();
+    }
+
     var seen: std.StringHashMap(void) = .init(allocator);
     defer {
         var keys = seen.keyIterator();
@@ -963,9 +989,9 @@ pub fn runWebhooksListen(
     var forwarded: u32 = 0;
     var forwarded_with_body: u32 = 0;
     var polls: u32 = 0;
-    const max_polls = if (listen.forward != null) listen.max_polls else 1;
+    const max_polls = if (listen.forward != null or listen.tunnel != null) listen.max_polls else 1;
 
-    while (polls < max_polls) : (polls += 1) {
+    while (polls < max_polls and !listen_stop.load(.acquire)) : (polls += 1) {
         const resp = try api.getJson(allocator, io, auth.api_origin, path, auth.access_token);
         defer allocator.free(resp.body);
         if (resp.status < 200 or resp.status >= 300) try api.reportApiFailure(allocator, io, opts.format, resp);
@@ -992,18 +1018,156 @@ pub fn runWebhooksListen(
             }
         }
 
-        if (polls + 1 < max_polls) try pollSleep(io, listen.interval_ms);
+        if (polls + 1 < max_polls and !listen_stop.load(.acquire)) try pollSleep(io, listen.interval_ms);
     }
 
-    try out.emit(allocator, io, opts.format, "Webhook delivery poll complete.", .{
-        .schemaVersion = 1,
-        .ok = true,
-        .polls = polls,
-        .trackedDeliveries = seen.count(),
-        .forwarded = forwarded,
-        .forwardedWithBody = forwarded_with_body,
-        .forward = listen.forward,
-    });
+    const restored = tunnel_state.finish();
+    if (listen.tunnel != null and !restored) {
+        try out.fail(allocator, io, opts.format, "webhook URL was not restored; the endpoint still points at the tunnel");
+    }
+
+    if (listen.tunnel) |_| {
+        try out.emit(allocator, io, opts.format, "Webhook delivery poll complete.", .{
+            .schemaVersion = 1,
+            .ok = true,
+            .polls = polls,
+            .trackedDeliveries = seen.count(),
+            .forwarded = forwarded,
+            .forwardedWithBody = forwarded_with_body,
+            .forward = listen.forward,
+            .channelId = listen.channel_id,
+            .rewritten = true,
+            .restored = true,
+        });
+    } else {
+        try out.emit(allocator, io, opts.format, "Webhook delivery poll complete.", .{
+            .schemaVersion = 1,
+            .ok = true,
+            .polls = polls,
+            .trackedDeliveries = seen.count(),
+            .forwarded = forwarded,
+            .forwardedWithBody = forwarded_with_body,
+            .forward = listen.forward,
+        });
+    }
+}
+
+const TunnelRewrite = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    origin: []const u8,
+    bearer: []const u8,
+    item_path: ?[]u8 = null,
+    restore_body: ?[]u8 = null,
+    needs_restore: bool = false,
+
+    fn rewrite(
+        self: *TunnelRewrite,
+        opts: globals.GlobalOptions,
+        tenant_id: []const u8,
+        environment_id: []const u8,
+        listen: WebhooksListenOptions,
+    ) !void {
+        const tunnel = listen.tunnel orelse return;
+        const channel_id = listen.channel_id orelse try out.fail(self.allocator, self.io, opts.format, "pass --channel-id with --tunnel");
+        const restore_url = listen.restore_url orelse try out.fail(self.allocator, self.io, opts.format, "pass --restore-url; the API does not return the current webhook URL");
+        if (!opts.yes) try out.fail(self.allocator, self.io, opts.format, "pass --yes to rewrite the webhook URL until this command exits");
+        if (!webhook_rewrite.isChannelId(channel_id)) try out.fail(self.allocator, self.io, opts.format, "invalid --channel-id");
+        if (!webhook_rewrite.isHttpUrl(tunnel) or !webhook_rewrite.isHttpUrl(restore_url)) {
+            try out.fail(self.allocator, self.io, opts.format, "webhook URL must be http or https");
+        }
+
+        const list_path = try std.fmt.allocPrint(self.allocator, "/v1/tenants/{s}/environments/{s}/webhooks", .{ tenant_id, environment_id });
+        defer self.allocator.free(list_path);
+        const listed = try api.getJson(self.allocator, self.io, self.origin, list_path, self.bearer);
+        defer self.allocator.free(listed.body);
+        if (listed.status < 200 or listed.status >= 300) try api.reportApiFailure(self.allocator, self.io, opts.format, listed);
+
+        const tunnel_body = webhook_rewrite.updateBody(self.allocator, listed.body, channel_id, tunnel) catch |err| switch (err) {
+            error.ChannelNotFound => try out.fail(self.allocator, self.io, opts.format, "webhook endpoint not found"),
+            error.MissingName => try out.fail(self.allocator, self.io, opts.format, "webhook endpoint has no name"),
+            error.MissingEnabled => try out.fail(self.allocator, self.io, opts.format, "webhook endpoint is missing enabled"),
+            error.InvalidJson => try out.fail(self.allocator, self.io, opts.format, "webhook list was not valid JSON"),
+            else => return err,
+        };
+        defer self.allocator.free(tunnel_body);
+        self.restore_body = webhook_rewrite.updateBody(self.allocator, listed.body, channel_id, restore_url) catch |err| switch (err) {
+            error.ChannelNotFound => try out.fail(self.allocator, self.io, opts.format, "webhook endpoint not found"),
+            error.MissingName => try out.fail(self.allocator, self.io, opts.format, "webhook endpoint has no name"),
+            error.MissingEnabled => try out.fail(self.allocator, self.io, opts.format, "webhook endpoint is missing enabled"),
+            error.InvalidJson => try out.fail(self.allocator, self.io, opts.format, "webhook list was not valid JSON"),
+            else => return err,
+        };
+        self.item_path = try std.fmt.allocPrint(self.allocator, "/v1/tenants/{s}/environments/{s}/webhooks/{s}", .{ tenant_id, environment_id, channel_id });
+        const updated = try api.putJson(self.allocator, self.io, self.origin, self.item_path.?, self.bearer, tunnel_body);
+        defer self.allocator.free(updated.body);
+        if (updated.status < 200 or updated.status >= 300) try api.reportApiFailure(self.allocator, self.io, opts.format, updated);
+        self.needs_restore = true;
+    }
+
+    fn finish(self: *TunnelRewrite) bool {
+        if (!self.needs_restore) return true;
+        return self.restore();
+    }
+
+    fn restoreIfNeeded(self: *TunnelRewrite) void {
+        if (!self.needs_restore) {
+            self.deinit();
+            return;
+        }
+        _ = self.restore();
+        self.deinit();
+    }
+
+    fn restore(self: *TunnelRewrite) bool {
+        self.needs_restore = false;
+        const path = self.item_path orelse return false;
+        const body = self.restore_body orelse return false;
+        const updated = api.putJson(self.allocator, self.io, self.origin, path, self.bearer, body) catch {
+            out.errPrint(self.io, self.allocator, "webhook URL was not restored; the endpoint still points at the tunnel", .{}) catch {};
+            return false;
+        };
+        defer self.allocator.free(updated.body);
+        if (updated.status < 200 or updated.status >= 300) {
+            out.errPrint(self.io, self.allocator, "webhook URL was not restored; the endpoint still points at the tunnel", .{}) catch {};
+            return false;
+        }
+        return true;
+    }
+
+    fn deinit(self: *TunnelRewrite) void {
+        if (self.item_path) |path| self.allocator.free(path);
+        if (self.restore_body) |body| self.allocator.free(body);
+        self.item_path = null;
+        self.restore_body = null;
+    }
+};
+
+var listen_stop: std.atomic.Value(bool) = .init(false);
+
+const listen_handler = switch (builtin.os.tag) {
+    .windows => struct {},
+    else => struct {
+        fn onStop(_: std.posix.SIG) callconv(.c) void {
+            listen_stop.store(true, .release);
+        }
+    },
+};
+
+fn armListenStop() void {
+    listen_stop.store(false, .release);
+    switch (builtin.os.tag) {
+        .windows => {},
+        else => {
+            const action = std.posix.Sigaction{
+                .handler = .{ .handler = listen_handler.onStop },
+                .mask = std.posix.sigemptyset(),
+                .flags = 0,
+            };
+            std.posix.sigaction(std.posix.SIG.INT, &action, null);
+            std.posix.sigaction(std.posix.SIG.TERM, &action, null);
+        },
+    }
 }
 
 pub fn runImpersonate(

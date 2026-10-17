@@ -48,7 +48,7 @@ authdog init [--dry-run] [--framework nextjs]
 authdog config pull | diff | patch [--dry-run]
 authdog doctor [--mcp] [--agent-sign-in]
 authdog webhooks verify --secret … --signature … --body '…'
-authdog webhooks listen [--forward URL] [--interval-ms 2000] [--max-polls 60]
+authdog webhooks listen [--forward URL] [--tunnel URL --channel-id ID --restore-url URL --yes]
 authdog impersonate --user-id … | impersonate revoke --grant-id …
 authdog deploy status
 authdog mcp install | list | uninstall [--client cursor|claude|vscode|codex | --all]
