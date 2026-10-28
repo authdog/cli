@@ -1,4 +1,4 @@
-//! Agent Sign-In CLI (`authdog agent doctor|prove`).
+//! Agent Sign-In CLI (`authdog agent doctor|prove|onboard`).
 
 const std = @import("std");
 const fs_util = @import("fs_util.zig");
@@ -37,6 +37,63 @@ pub const WaitOptions = struct {
     auth_token: ?[]const u8 = null,
     poll: bool = true,
 };
+
+pub const OnboardOptions = struct {
+    name: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    scope_storage: [32][]const u8 = undefined,
+    scope_count: usize = 0,
+    tool_storage: [32][]const u8 = undefined,
+    tool_count: usize = 0,
+    delegation: bool = false,
+    identity_assertion: bool = false,
+    verify: bool = false,
+
+    pub fn scopes(self: *const OnboardOptions) []const []const u8 {
+        return self.scope_storage[0..self.scope_count];
+    }
+
+    pub fn tools(self: *const OnboardOptions) []const []const u8 {
+        return self.tool_storage[0..self.tool_count];
+    }
+};
+
+/// JSON body for `POST /v1/tenants/{tenant}/environments/{env}/agents/onboard`.
+/// Unset optionals are omitted so Zod `.optional()` does not see null.
+pub fn writeOnboardBody(writer: *std.Io.Writer, body: struct {
+    application_id: []const u8,
+    name: []const u8,
+    description: ?[]const u8 = null,
+    scopes: []const []const u8 = &.{},
+    tools: []const []const u8 = &.{},
+    delegation: bool = false,
+    identity_assertion: bool = false,
+    verify: bool = false,
+}) !void {
+    try writer.writeAll("{\"applicationId\":");
+    try writer.print("{f}", .{std.json.fmt(body.application_id, .{})});
+    try writer.writeAll(",\"name\":");
+    try writer.print("{f}", .{std.json.fmt(body.name, .{})});
+    if (body.description) |raw| {
+        const description = std.mem.trim(u8, raw, " \t\r\n");
+        if (description.len != 0) {
+            try writer.writeAll(",\"description\":");
+            try writer.print("{f}", .{std.json.fmt(description, .{})});
+        }
+    }
+    if (body.scopes.len != 0) {
+        try writer.writeAll(",\"allowedScopes\":");
+        try writer.print("{f}", .{std.json.fmt(body.scopes, .{})});
+    }
+    if (body.tools.len != 0) {
+        try writer.writeAll(",\"allowedTools\":");
+        try writer.print("{f}", .{std.json.fmt(body.tools, .{})});
+    }
+    if (body.delegation) try writer.writeAll(",\"delegationEnabled\":true");
+    if (body.identity_assertion) try writer.writeAll(",\"identityAssertion\":true");
+    if (body.verify) try writer.writeAll(",\"verify\":true");
+    try writer.writeByte('}');
+}
 
 pub const DoctorCheck = struct {
     name: []const u8,
@@ -391,6 +448,134 @@ pub fn runRpInit(
     try out.print(io, std.Io.File.stderr(), "Copy the client secret now; it is not saved locally.\n", .{});
 }
 
+pub fn runOnboard(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ: *const std.process.Environ.Map,
+    opts: globals.GlobalOptions,
+    onboard: OnboardOptions,
+) !void {
+    const auth = auth_session.requireAuth(allocator, io, environ, opts.api_origin) catch {
+        try out.fail(allocator, io, opts.format, "not logged in; run `authdog login`");
+    };
+    defer auth_session.deinitAuth(allocator, auth);
+
+    const project_path = try project.resolvePath(allocator, opts);
+    defer allocator.free(project_path);
+    const linked_opt = try project.load(allocator, io, project_path);
+    const linked = linked_opt orelse try out.fail(allocator, io, opts.format, "no linked project; run `authdog link` first");
+    defer linked.deinit(allocator);
+
+    const raw_name = onboard.name orelse try out.fail(allocator, io, opts.format, "pass --name");
+    const name = std.mem.trim(u8, raw_name, " \t\r\n");
+    if (name.len < 2) try out.fail(allocator, io, opts.format, "name must be at least 2 characters");
+
+    const path = try std.fmt.allocPrint(allocator, "/v1/tenants/{s}/environments/{s}/agents/onboard", .{
+        linked.tenantId,
+        linked.environmentId,
+    });
+    defer allocator.free(path);
+    const url = try api.joinUrl(allocator, opts.api_origin, path);
+    defer allocator.free(url);
+
+    var body: std.Io.Writer.Allocating = .init(allocator);
+    defer body.deinit();
+    try writeOnboardBody(&body.writer, .{
+        .application_id = linked.applicationId,
+        .name = name,
+        .description = onboard.description,
+        .scopes = onboard.scopes(),
+        .tools = onboard.tools(),
+        .delegation = onboard.delegation,
+        .identity_assertion = onboard.identity_assertion,
+        .verify = onboard.verify,
+    });
+
+    const resp = try api.postJson(allocator, io, url, auth.access_token, body.written());
+    defer allocator.free(resp.body);
+    if (resp.status < 200 or resp.status >= 300) {
+        try api.reportApiFailure(allocator, io, opts.format, resp);
+    }
+
+    const parsed = std.json.parseFromSlice(struct {
+        created: bool = false,
+        entry: ?struct {
+            id: ?[]const u8 = null,
+            name: ?[]const u8 = null,
+        } = null,
+        clientId: ?[]const u8 = null,
+        clientSecret: ?[]const u8 = null,
+        meta: ?struct {
+            @"error": ?struct {
+                message: ?[]const u8 = null,
+            } = null,
+        } = null,
+    }, allocator, resp.body, .{ .ignore_unknown_fields = true }) catch {
+        try out.fail(allocator, io, opts.format, "invalid onboard response");
+    };
+    defer parsed.deinit();
+
+    if (parsed.value.meta) |meta| {
+        if (meta.@"error") |err| {
+            if (err.message) |message| {
+                if (message.len != 0) try out.fail(allocator, io, opts.format, message);
+            }
+        }
+    }
+
+    const created = parsed.value.created;
+    const entry_id: ?[]const u8 = if (parsed.value.entry) |entry| entry.id else null;
+    const entry_name: []const u8 = if (parsed.value.entry) |entry|
+        (entry.name orelse name)
+    else
+        name;
+    const client_id = parsed.value.clientId;
+
+    const secret: ?[]const u8 = if (created) blk: {
+        const value = parsed.value.clientSecret orelse try out.fail(allocator, io, opts.format, "clientSecret missing");
+        if (value.len == 0) try out.fail(allocator, io, opts.format, "clientSecret missing");
+        break :blk value;
+    } else null;
+
+    if (opts.format == .json) {
+        if (secret) |client_secret| {
+            try out.emit(allocator, io, .json, "", .{
+                .schemaVersion = 1,
+                .ok = true,
+                .created = true,
+                .entryId = entry_id,
+                .name = entry_name,
+                .clientId = client_id,
+                .clientSecret = client_secret,
+                .hint = "Copy clientSecret now; it is not stored locally",
+            });
+        } else {
+            try out.emit(allocator, io, .json, "", .{
+                .schemaVersion = 1,
+                .ok = true,
+                .created = false,
+                .entryId = entry_id,
+                .name = entry_name,
+                .clientId = client_id,
+            });
+        }
+        return;
+    }
+
+    if (created) {
+        try out.print(io, std.Io.File.stdout(), "Onboarded agent\n", .{});
+    } else {
+        try out.print(io, std.Io.File.stdout(), "Agent already exists\n", .{});
+    }
+    try out.print(io, std.Io.File.stdout(), "name: {s}\n", .{entry_name});
+    if (entry_id) |id| try out.print(io, std.Io.File.stdout(), "id: {s}\n", .{id});
+    if (client_id) |id| try out.print(io, std.Io.File.stdout(), "client_id: {s}\n", .{id});
+    if (secret) |client_secret| {
+        try out.print(io, std.Io.File.stdout(), "client_secret: {s}\n", .{client_secret});
+        try out.print(io, std.Io.File.stderr(), "Copy the client secret now; it is not saved locally.\n", .{});
+    }
+}
+
 fn duration(nanoseconds: i96) std.Io.Clock.Duration {
     return .{
         .raw = .{ .nanoseconds = nanoseconds },
@@ -534,4 +719,37 @@ pub fn runProve(
         .ok = true,
         .status = "proved",
     });
+}
+
+test "onboard body omits unset fields" {
+    var buf: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buf.deinit();
+    try writeOnboardBody(&buf.writer, .{
+        .application_id = "app_1",
+        .name = "billing",
+    });
+    try std.testing.expectEqualStrings(
+        "{\"applicationId\":\"app_1\",\"name\":\"billing\"}",
+        buf.written(),
+    );
+}
+
+test "onboard body includes optional flags and trims description" {
+    var buf: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buf.deinit();
+    try writeOnboardBody(&buf.writer, .{
+        .application_id = "app_1",
+        .name = "billing",
+        .description = "  bills  ",
+        .scopes = &.{ "mcp:invoke", "openid" },
+        .tools = &.{"checkout"},
+        .delegation = true,
+        .identity_assertion = true,
+        .verify = true,
+    });
+    try std.testing.expectEqualStrings(
+        "{\"applicationId\":\"app_1\",\"name\":\"billing\",\"description\":\"bills\",\"allowedScopes\":[\"mcp:invoke\",\"openid\"],\"allowedTools\":[\"checkout\"],\"delegationEnabled\":true,\"identityAssertion\":true,\"verify\":true}",
+        buf.written(),
+    );
+    try std.testing.expect(std.mem.indexOf(u8, buf.written(), "null") == null);
 }

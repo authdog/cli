@@ -18,7 +18,7 @@ This document defines the terminal-first CLI we are building on top of the exist
 
 - Replacing the hosted console for all configuration.
 - Embedding a JavaScript runtime in the Zig binary (package install and file patches may shell out to `npm`/`bun`/`pnpm`/`yarn` when present).
-- Implementing every `/v1` route as a subcommand (expose high-value workflows first; add `authdog api …` later if needed).
+- Implementing every `/v1` route as its own subcommand. `authdog api METHOD /v1/…` calls one published route with the saved session and redacts secret fields before printing.
 - Hosting a proprietary webhook relay SaaS (prefer replay/verify locally; optional tunnel documented as bring-your-own).
 
 ## 3. Current baseline (keep and extend)
@@ -119,10 +119,11 @@ authdog
 │   ├── doctor
 │   ├── prove          # requires --accept-disclosure
 │   ├── rp-init        # management GraphQL; login + linked project
-│   └── wait           # --poll; optional headless redirect capture
+│   ├── wait           # --poll; optional headless redirect capture
+│   └── onboard        # REST POST …/agents/onboard; login + linked project; secret once
 ├── device
 │   └── authorize      # RFC 8628; --poll, --issuer, client env
-└── (future) api …
+└── api METHOD PATH          # /v1 only; --data for POST PUT PATCH
 ```
 
 Backward compatibility: bare `authdog login|logout|status` remain indefinitely.
@@ -320,6 +321,19 @@ authdog webhooks listen --forward http://127.0.0.1:3000/webhooks/authdog [--envi
 | Agent Sign-In key + issuer | optional `--agent-sign-in` (same signal as `authdog agent doctor`) |
 
 Output table (text) or structured json array `{ name, ok, detail }`.
+
+---
+
+### 7.11 `authdog api`
+
+**Purpose:** Call one published Management route without a dedicated subcommand.
+
+```text
+authdog api GET /v1/userinfo
+authdog api POST /v1/tenants/{tenantId}/applications/{applicationId}/environments --data '{"name":"dev"}'
+```
+
+The path must start with `/v1` on the configured API origin. Absolute URLs and `..` are rejected. `--data` is allowed only for `POST`, `PUT`, and `PATCH`. The saved session is sent as the bearer token and is never printed. JSON responses are printed with secret fields replaced by `***` (`signingSecret`, `clientSecret`, `access_token`, `refresh_token`, `token`, `secret`, `password`, and the other write-only channel secrets). A non-JSON body is not printed. HTTP 401 exits 3. Any other non-2xx response exits 4 after the redacted body.
 
 ---
 

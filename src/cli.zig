@@ -8,6 +8,7 @@ const out = @import("out.zig");
 const commands = @import("commands.zig");
 const agent = @import("agent.zig");
 const device = @import("device.zig");
+const api_cmd = @import("api_cmd.zig");
 const auth_session = @import("auth_session.zig");
 
 pub const OutputFormat = globals.OutputFormat;
@@ -33,7 +34,9 @@ pub const Command = union(enum) {
     agent_prove: agent.ProveOptions,
     agent_rp_init: agent.RpInitOptions,
     agent_wait: agent.WaitOptions,
+    agent_onboard: agent.OnboardOptions,
     device_authorize: device.AuthorizeOptions,
+    api: api_cmd.Request,
 };
 
 pub const Invocation = union(enum) {
@@ -75,6 +78,7 @@ pub fn run(init: std.process.Init) !u8 {
             dispatch(allocator, io, init.environ_map, parsed.globals, parsed.command) catch |err| switch (err) {
                 error.Reported => return 2,
                 error.SessionExpired => return 3,
+                error.ApiFailed => return 4,
                 error.AuthRequired => {
                     try out.errPrint(io, allocator, "not logged in; run `authdog login`", .{});
                     return 3;
@@ -150,7 +154,9 @@ fn dispatch(
         .agent_prove => |prove| try agent.runProve(allocator, io, environ, opts, prove),
         .agent_rp_init => |rp| try agent.runRpInit(allocator, io, environ, opts, rp),
         .agent_wait => |wait| try agent.runWait(allocator, io, environ, opts, wait),
+        .agent_onboard => |onboard| try agent.runOnboard(allocator, io, environ, opts, onboard),
         .device_authorize => |auth| try device.runAuthorize(allocator, io, environ, opts, auth),
+        .api => |request| try api_cmd.run(allocator, io, environ, opts, request),
     }
 }
 
@@ -189,7 +195,9 @@ const help_text =
     \\  agent prove           Sign waiting-page token and POST …/agents/approve
     \\  agent rp-init         Register agent_sign_in OIDC client (management GraphQL)
     \\  agent wait            Poll agents/wait?poll=1 until redirect/code issued
+    \\  agent onboard         Create or reuse an agent (prints secret once)
     \\  device authorize      RFC 8628 device flow (--poll, --issuer, client env)
+    \\  api METHOD PATH       Call one /v1 route (GET POST PUT PATCH DELETE, --data)
     \\  mcp install           Register Authdog MCP (default: Cursor; --client, --all)
     \\  mcp list              Show Cursor, Claude, VS Code, and Codex config paths
     \\  mcp uninstall         Remove only the Authdog MCP entry (--client, --all)
@@ -246,6 +254,9 @@ pub fn parse(allocator: std.mem.Allocator, environ: *std.process.Environ.Map, ar
         error.McpFlagConflict => return .{ .bad = "--client and --all cannot be combined" },
         error.UnrecognizedMcpFlag => return .{ .bad = "unrecognized mcp flag" },
         error.UnrecognizedWebhookFlag => return .{ .bad = "unrecognized webhooks flag" },
+        error.UnrecognizedApiFlag => return .{ .bad = "unrecognized api flag" },
+        error.UnrecognizedAgentFlag => return .{ .bad = "unrecognized agent flag" },
+        error.TooManyFlagValues => return .{ .bad = "too many --scope or --tool values (max 32)" },
     };
     return .{ .run = .{ .globals = opts, .command = command } };
 }
@@ -310,6 +321,9 @@ const ParseCommandError = error{
     McpFlagConflict,
     UnrecognizedMcpFlag,
     UnrecognizedWebhookFlag,
+    UnrecognizedApiFlag,
+    UnrecognizedAgentFlag,
+    TooManyFlagValues,
 };
 
 fn parseCommand(allocator: std.mem.Allocator, args: []const []const u8, index: *usize) ParseCommandError!Command {
@@ -328,9 +342,32 @@ fn parseCommand(allocator: std.mem.Allocator, args: []const []const u8, index: *
     if (std.mem.eql(u8, head, "doctor")) return try parseDoctor(args, index);
     if (std.mem.eql(u8, head, "agent")) return try parseAgent(allocator, args, index);
     if (std.mem.eql(u8, head, "device")) return try parseDevice(allocator, args, index);
+    if (std.mem.eql(u8, head, "api")) return try parseApi(args, index);
     if (std.mem.eql(u8, head, "mcp")) return try parseMcp(args, index);
     if (std.mem.eql(u8, head, "auth")) return try parseAuth(args, index);
     return error.UnrecognizedCommand;
+}
+
+fn parseApi(args: []const []const u8, index: *usize) ParseCommandError!Command {
+    index.* += 1;
+    if (index.* >= args.len) return error.MissingSubcommand;
+    const method = args[index.*];
+    index.* += 1;
+    if (index.* >= args.len) return error.MissingFlagValue;
+    var request = api_cmd.Request{ .method = method, .path = args[index.*] };
+    index.* += 1;
+    while (index.* < args.len) {
+        const flag = args[index.*];
+        if (std.mem.eql(u8, flag, "--data")) {
+            index.* += 1;
+            if (index.* >= args.len) return error.MissingFlagValue;
+            request.data = args[index.*];
+            index.* += 1;
+            continue;
+        }
+        return error.UnrecognizedApiFlag;
+    }
+    return .{ .api = request };
 }
 
 fn parseAuth(args: []const []const u8, index: *usize) ParseCommandError!Command {
@@ -746,6 +783,64 @@ fn parseAgent(allocator: std.mem.Allocator, args: []const []const u8, index: *us
         }
         return .{ .agent_prove = prove };
     }
+    if (std.mem.eql(u8, sub, "onboard")) {
+        var onboard: agent.OnboardOptions = .{};
+        index.* += 1;
+        while (index.* < args.len) {
+            const flag = args[index.*];
+            if (std.mem.eql(u8, flag, "--name")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                onboard.name = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--description")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                onboard.description = args[index.*];
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--scope")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                if (onboard.scope_count >= onboard.scope_storage.len) return error.TooManyFlagValues;
+                onboard.scope_storage[onboard.scope_count] = args[index.*];
+                onboard.scope_count += 1;
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--tool")) {
+                index.* += 1;
+                if (index.* >= args.len) return error.MissingFlagValue;
+                if (onboard.tool_count >= onboard.tool_storage.len) return error.TooManyFlagValues;
+                onboard.tool_storage[onboard.tool_count] = args[index.*];
+                onboard.tool_count += 1;
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--delegation")) {
+                onboard.delegation = true;
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--identity-assertion")) {
+                onboard.identity_assertion = true;
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, flag, "--verify")) {
+                onboard.verify = true;
+                index.* += 1;
+                continue;
+            }
+            if (std.mem.startsWith(u8, flag, "--")) return error.UnrecognizedAgentFlag;
+            break;
+        }
+        _ = allocator;
+        return .{ .agent_onboard = onboard };
+    }
     return error.MissingSubcommand;
 }
 
@@ -859,6 +954,17 @@ test "parses init package manager" {
     try std.testing.expect(parsed.run.command.init.dry_run);
 }
 
+test "parses api request" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const parsed = try parse(std.testing.allocator, &env, &.{ "api", "POST", "/v1/userinfo", "--data", "{}" });
+    try std.testing.expectEqualStrings("POST", parsed.run.command.api.method);
+    try std.testing.expectEqualStrings("/v1/userinfo", parsed.run.command.api.path);
+    try std.testing.expectEqualStrings("{}", parsed.run.command.api.data.?);
+    const bad = try parse(std.testing.allocator, &env, &.{ "api", "GET", "/v1/userinfo", "--body", "{}" });
+    try std.testing.expect(bad == .bad);
+}
+
 test "parses webhook tunnel flags" {
     var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
@@ -910,10 +1016,36 @@ test "parses agent prove flags" {
     try std.testing.expectEqualStrings("kid-1", parsed.run.command.agent_prove.kid.?);
 }
 
+test "parses agent onboard flags" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const parsed = try parse(std.testing.allocator, &env, &.{
+        "agent",         "onboard",              "--name",   "billing",
+        "--description", "bills",                "--scope",  "mcp:invoke",
+        "--scope",       "openid",               "--tool",   "checkout",
+        "--delegation",  "--identity-assertion", "--verify",
+    });
+    try std.testing.expect(parsed.run.command == .agent_onboard);
+    const onboard = parsed.run.command.agent_onboard;
+    try std.testing.expectEqualStrings("billing", onboard.name.?);
+    try std.testing.expectEqualStrings("bills", onboard.description.?);
+    try std.testing.expectEqualStrings("mcp:invoke", onboard.scopes()[0]);
+    try std.testing.expectEqualStrings("openid", onboard.scopes()[1]);
+    try std.testing.expectEqualStrings("checkout", onboard.tools()[0]);
+    try std.testing.expect(onboard.delegation);
+    try std.testing.expect(onboard.identity_assertion);
+    try std.testing.expect(onboard.verify);
+
+    const unknown = try parse(std.testing.allocator, &env, &.{ "agent", "onboard", "--name", "billing", "--nope" });
+    try std.testing.expect(unknown == .bad);
+}
+
 test {
+    _ = agent;
     _ = commands;
     _ = @import("detect.zig");
     _ = @import("api/client.zig");
     _ = @import("mcp_config.zig");
     _ = @import("webhook_rewrite.zig");
+    _ = @import("api_cmd.zig");
 }
